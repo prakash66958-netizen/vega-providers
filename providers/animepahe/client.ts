@@ -72,19 +72,20 @@ export async function requestAnimePahe(
         `AnimePahe: Cloudflare challenge (Status ${error.response?.status}) for ${targetUrl}. Opening solver...`,
       );
 
+      const wafHeaders = { ...headers, Referer: baseUrl };
+      delete wafHeaders["Cookie"];
+      delete wafHeaders["X-Requested-With"];
+
       const wafResult = await openWebView(baseUrl, {
         title: "Solve the captcha below and click done",
         description: "Required to bypass AnimePahe Cloudflare protection.",
-        headers: {
-          ...headers,
-          Referer: baseUrl,
-        },
+        headers: wafHeaders,
         force: true,
         waitForCookie: "cf_clearance",
       });
 
-      const newCookie = wafResult.cookies;
-      const newUa = wafResult.userAgent;
+      const newCookie = wafResult.cookies || (wafResult as any).cookie || "";
+      const newUa = wafResult.userAgent || headers["User-Agent"];
 
       if (newUa) {
         await kvStore?.set("animepahe_ua", newUa);
@@ -103,7 +104,7 @@ export async function requestAnimePahe(
           ...headers,
           Referer: `${baseUrl}/`,
           Cookie: newCookie,
-          "User-Agent": newUa || headers["User-Agent"],
+          "User-Agent": newUa,
         },
         signal: options.signal,
       });
