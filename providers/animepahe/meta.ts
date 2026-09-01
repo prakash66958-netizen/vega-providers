@@ -1,12 +1,13 @@
 import { Info, ProviderContext } from "../types";
 import { requestAnimePahe } from "./client";
+import { throwProviderError } from "../providerErrors";
 
 export const getMeta = async function ({
   link,
   providerContext,
 }: {
   link: string;
-  provider: string;
+  provider?: string;
   providerContext: ProviderContext;
 }): Promise<Info> {
   const { cheerio } = providerContext;
@@ -18,7 +19,7 @@ export const getMeta = async function ({
     const response = await requestAnimePahe(animeUrl, providerContext, {
       isHtml: true,
     });
-    const html = response.data;
+    const html = typeof response.data === "string" ? response.data : "";
     const $ = cheerio.load(html);
 
     // Extract Titles
@@ -73,19 +74,6 @@ export const getMeta = async function ({
       ],
     };
   } catch (error) {
-    console.error("AnimePahe getMeta error:", error);
-    return {
-      title: session,
-      image: "",
-      synopsis: "",
-      imdbId: "",
-      type: "series",
-      linkList: [
-        {
-          title: "Episodes",
-          episodesLink: `/api?m=release&id=${session}&sort=episode_asc`,
-        },
-      ],
-    };
+    throwProviderError("AnimePahe", "getMeta", error);
   }
 };

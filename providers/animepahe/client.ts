@@ -40,14 +40,10 @@ export async function requestAnimePahe(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
     Accept: options.isHtml
       ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-      : "application/json, text/javascript, */*; q=0.01",
+      : "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     Referer: `${baseUrl}/`,
   };
-
-  if (!options.isHtml) {
-    headers["X-Requested-With"] = "XMLHttpRequest";
-  }
 
   if (savedCookie) {
     headers["Cookie"] = savedCookie;
@@ -63,7 +59,7 @@ export async function requestAnimePahe(
     });
     return response;
   } catch (error: any) {
-    // If Cloudflare WAF 403 is encountered and openWebView solver is available
+    // If Cloudflare WAF 403 or 503 is encountered and openWebView solver is available
     if (
       (error.response?.status === 403 || error.response?.status === 503) &&
       openWebView
@@ -74,7 +70,6 @@ export async function requestAnimePahe(
 
       const wafHeaders = { ...headers, Referer: baseUrl };
       delete wafHeaders["Cookie"];
-      delete wafHeaders["X-Requested-With"];
 
       const wafResult = await openWebView(baseUrl, {
         title: "Solve the captcha below and click done",
@@ -84,7 +79,13 @@ export async function requestAnimePahe(
         waitForCookie: "cf_clearance",
       });
 
-      const newCookie = wafResult.cookies || (wafResult as any).cookie || "";
+      let newCookie = wafResult.cookies || (wafResult as any).cookie || "";
+      if (!newCookie && wafResult.cookieMap) {
+        newCookie = Object.entries(wafResult.cookieMap)
+          .map(([k, v]) => `${k}=${v}`)
+          .join("; ");
+      }
+
       const newUa = wafResult.userAgent || headers["User-Agent"];
 
       if (newUa) {
