@@ -41,9 +41,11 @@ export async function kwikExtractor(
   signal?: AbortSignal,
   referer: string = "https://animepahe.pw/",
 ): Promise<{ streamUrl: string; type: string } | null> {
-  const { axios, commonHeaders, openWebView } = providerContext;
+  const { axios, commonHeaders, openWebView, kvStore } = providerContext;
 
-  // Use commonHeaders as base — same pattern as the working zcloud extractor
+  const savedUa = await kvStore?.get<string>("animepahe_ua");
+  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
+
   const headers: Record<string, string> = {
     ...(commonHeaders || {}),
     Referer: referer,
@@ -52,46 +54,45 @@ export async function kwikExtractor(
     "Accept-Language": "en-US,en;q=0.9",
   };
 
+  if (savedUa) headers["User-Agent"] = savedUa;
+  if (savedCookie) headers["Cookie"] = savedCookie;
+
   try {
-    let res: any;
+    let html = "";
     try {
-      res = await axios.get(kwikUrl, { headers, signal });
+      const res = await axios.get(kwikUrl, { headers, signal });
+      html = typeof res?.data === "string" ? res.data : "";
     } catch (err: any) {
-      // If kwik is behind Cloudflare, solve it (same pattern as zcloud)
+      // If kwik is behind Cloudflare challenge, solve via WebView and read rendered HTML
       if (
         (err.response?.status === 403 || err.response?.status === 503) &&
         openWebView
       ) {
-        console.log(`kwikExtractor: WAF detected for ${kwikUrl}, solving...`);
-
-        const kwikBase = kwikUrl.split("/").slice(0, 3).join("/");
-        const cleanHeaders = { ...headers, Referer: kwikBase };
-        delete cleanHeaders["User-Agent"];
-        delete cleanHeaders["sec-ch-ua"];
-        delete cleanHeaders["sec-ch-ua-mobile"];
-        delete cleanHeaders["sec-ch-ua-platform"];
-        delete cleanHeaders["Cookie"];
-
-        const wafResult = await openWebView(kwikBase, {
-          title: "Solve the captcha below and click done",
-          description: "Required for video playback.",
-          headers: cleanHeaders,
+        console.log(`kwikExtractor: WAF challenge for ${kwikUrl}, opening solver...`);
+        const wafResult = await openWebView(kwikUrl, {
+          title: "Kwik Video Verification",
+          description: "Required once to start video streaming.",
+          headers: { Referer: referer },
           waitForCookie: "cf_clearance",
           force: true,
         });
 
-        if (wafResult.userAgent) headers["User-Agent"] = wafResult.userAgent;
-        headers["Cookie"] =
-          (headers["Cookie"] ? headers["Cookie"] + "; " : "") +
-          wafResult.cookies;
+        html = wafResult.data || "";
 
-        res = await axios.get(kwikUrl, { headers, signal });
+        if (wafResult.cookies) {
+          headers["Cookie"] = wafResult.cookies;
+        }
+        if (wafResult.userAgent) {
+          headers["User-Agent"] = wafResult.userAgent;
+        }
       } else {
         throw err;
       }
     }
 
-    const html: string = typeof res?.data === "string" ? res.data : "";
+    if (!html) {
+      return { streamUrl: kwikUrl, type: "embed" };
+    }
 
     // Unpack all packed scripts in the HTML
     let unpacked = "";

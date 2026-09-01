@@ -17,14 +17,60 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Core request function — follows the same proven pattern as zcloud.ts:
- *
- * 1. Make the request with commonHeaders
- * 2. If 403 → open WebView → put cookies directly into headers → retry ONCE
- * 3. If 429 → exponential backoff retry
- *
- * No pre-flight checks, no kvStore cookie management, no ensureCfClearance.
- * Cookies flow directly from WebView result → retry headers in the same call.
+ * Extracts JSON or clean HTML payload from a WebView outerHTML response.
+ */
+function extractDataFromWaf(rawData: string): any {
+  if (!rawData || typeof rawData !== "string") {
+    return rawData;
+  }
+
+  const trimmed = rawData.trim();
+
+  // 1. Check for JSON inside <pre> tag (standard browser display for JSON endpoints)
+  const preMatch = trimmed.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  if (preMatch && preMatch[1]) {
+    try {
+      return JSON.parse(preMatch[1].trim());
+    } catch {
+      // Not strict JSON, continue
+    }
+  }
+
+  // 2. Check for JSON inside <body> tag
+  const bodyMatch = trimmed.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch && bodyMatch[1]) {
+    const bodyContent = bodyMatch[1].trim();
+    if (bodyContent.startsWith("{") || bodyContent.startsWith("[")) {
+      try {
+        return JSON.parse(bodyContent);
+      } catch {
+        // Not JSON
+      }
+    }
+  }
+
+  // 3. Check if raw data is direct JSON string
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // Continue
+    }
+  }
+
+  // 4. Return raw HTML string
+  return rawData;
+}
+
+/**
+ * Robust request handler:
+ * 1. Checks kvStore for saved Cloudflare cookies & User-Agent.
+ * 2. Attempts HTTP request with Axios.
+ * 3. On 403 Cloudflare WAF: Opens the EXACT targetUrl in the device WebView.
+ *    The WebView executes JS and renders the page/JSON.
+ *    Directly captures `wafResult.data`, saves cookies to kvStore, and returns the data.
+ *    This avoids secondary Axios TLS fingerprint rejection loops.
+ * 4. On 429: Retries with exponential backoff.
  */
 export async function requestAnimePahe(
   endpointOrUrl: string,
@@ -36,7 +82,7 @@ export async function requestAnimePahe(
     isHtml?: boolean;
   } = {},
 ): Promise<any> {
-  const { axios, openWebView, commonHeaders } = providerContext;
+  const { axios, openWebView, kvStore, commonHeaders } = providerContext;
   const baseUrl = await getBaseUrl(providerContext);
 
   let targetUrl = endpointOrUrl;
@@ -45,7 +91,9 @@ export async function requestAnimePahe(
     targetUrl = `${baseUrl}${slash}${targetUrl}`;
   }
 
-  // Start with commonHeaders only — let the Vega app's injected headers do their job
+  const savedUa = await kvStore?.get<string>("animepahe_ua");
+  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
+
   const headers: Record<string, string> = {
     ...(commonHeaders || {}),
     Referer: `${baseUrl}/`,
@@ -55,8 +103,15 @@ export async function requestAnimePahe(
     "Accept-Language": "en-US,en;q=0.9",
   };
 
+  if (savedUa) {
+    headers["User-Agent"] = savedUa;
+  }
+  if (savedCookie) {
+    headers["Cookie"] = savedCookie;
+  }
+
   const MAX_429_RETRIES = 3;
-  const BACKOFF_MS = [3000, 8000, 15000];
+  const BACKOFF_MS = [2000, 5000, 10000];
 
   for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
     try {
@@ -71,35 +126,56 @@ export async function requestAnimePahe(
     } catch (error: any) {
       const status = error.response?.status;
 
-      // --- Handle 403/503 Cloudflare WAF (exactly like zcloud.ts) ---
+      // --- Cloudflare WAF (403 / 503) ---
       if ((status === 403 || status === 503) && openWebView) {
         console.log(
-          `AnimePahe: WAF detected (${status}) for ${targetUrl}, using solver...`,
+          `AnimePahe: Cloudflare challenge (${status}) for ${targetUrl}. Opening WebView solver...`,
         );
 
-        // Clean headers before passing to WebView (same as zcloud)
-        const cleanHeaders = { ...headers, Referer: baseUrl };
-        delete cleanHeaders["User-Agent"];
-        delete cleanHeaders["sec-ch-ua"];
-        delete cleanHeaders["sec-ch-ua-mobile"];
-        delete cleanHeaders["sec-ch-ua-platform"];
-        delete cleanHeaders["Cookie"];
+        const cleanHeaders: Record<string, string> = {
+          Referer: `${baseUrl}/`,
+          Accept: headers["Accept"] || "*/*",
+        };
 
-        const wafResult = await openWebView(baseUrl, {
-          title: "Solve the captcha below and click done",
-          description: "Required to bypass AnimePahe Cloudflare protection.",
+        const wafResult = await openWebView(targetUrl, {
+          title: "AnimePahe Security Check",
+          description: "Please complete the verification once to continue.",
           headers: cleanHeaders,
           waitForCookie: "cf_clearance",
           force: true,
         });
 
-        // Forward cookies directly into headers (same pattern as zcloud)
-        if (wafResult.userAgent) headers["User-Agent"] = wafResult.userAgent;
-        headers["Cookie"] =
-          (headers["Cookie"] ? headers["Cookie"] + "; " : "") +
-          wafResult.cookies;
+        // Extract cookie string
+        let newCookie = wafResult.cookies || (wafResult as any).cookie || "";
+        if (!newCookie && wafResult.cookieMap) {
+          newCookie = Object.entries(wafResult.cookieMap)
+            .map(([k, v]) => `${k}=${v}`)
+            .join("; ");
+        }
 
-        // Retry once with the WebView cookies
+        const newUa = wafResult.userAgent || savedUa;
+
+        // Persist credentials in kvStore so all subsequent calls reuse them
+        if (newCookie) {
+          await kvStore?.set("animepahe_cookie", newCookie);
+          headers["Cookie"] = newCookie;
+        }
+        if (newUa) {
+          await kvStore?.set("animepahe_ua", newUa);
+          headers["User-Agent"] = newUa;
+        }
+
+        // If the WebView captured the page content directly, parse and return it!
+        if (wafResult.data && wafResult.data.trim()) {
+          const parsedData = extractDataFromWaf(wafResult.data);
+          return {
+            data: parsedData,
+            status: 200,
+            headers: {},
+          };
+        }
+
+        // Fallback: Retry with fresh cookies and user agent
         return await axios({
           url: targetUrl,
           method: options.method || "GET",
@@ -109,14 +185,14 @@ export async function requestAnimePahe(
         });
       }
 
-      // --- Handle 429 rate limiting ---
+      // --- Rate Limiting (429) ---
       if (status === 429 && attempt < MAX_429_RETRIES) {
         const retryAfter = error.response?.headers?.["retry-after"];
         const waitMs = retryAfter
           ? parseInt(retryAfter, 10) * 1000
-          : BACKOFF_MS[attempt] || 15000;
+          : BACKOFF_MS[attempt] || 5000;
         console.log(
-          `AnimePahe: 429 rate limited. Waiting ${waitMs}ms (attempt ${attempt + 1}/${MAX_429_RETRIES})`,
+          `AnimePahe: Rate limited (429). Retrying in ${waitMs}ms... (attempt ${attempt + 1}/${MAX_429_RETRIES})`,
         );
         await sleep(waitMs);
         continue;
