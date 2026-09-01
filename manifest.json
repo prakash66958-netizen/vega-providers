@@ -1,5 +1,13 @@
 [
   {
+    "display_name": "HiAnime",
+    "value": "hianime",
+    "icon": "https://hianime.at/theme/images/icons-192.png",
+    "version": "1.0.0",
+    "type": "anime",
+    "description": "Watch Sub & Dub Anime with fast 1080p HLS streams, episode lists, and subtitles."
+  },
+  {
     "display_name": "AnimePahe",
     "value": "animepahe",
     "icon": "https://animepahe.pw/favicon.ico",
