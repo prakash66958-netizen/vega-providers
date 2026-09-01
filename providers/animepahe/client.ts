@@ -34,17 +34,16 @@ export async function requestAnimePahe(
 
   const headers: Record<string, string> = {
     ...(commonHeaders || {}),
-    "User-Agent":
-      savedUa ||
-      commonHeaders?.["User-Agent"] ||
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    Referer: `${baseUrl}/`,
     Accept: options.isHtml
       ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
       : "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    Referer: `${baseUrl}/`,
   };
 
+  if (savedUa) {
+    headers["User-Agent"] = savedUa;
+  }
   if (savedCookie) {
     headers["Cookie"] = savedCookie;
   }
@@ -68,13 +67,17 @@ export async function requestAnimePahe(
         `AnimePahe: Cloudflare challenge (Status ${error.response?.status}) for ${targetUrl}. Opening solver...`,
       );
 
-      const wafHeaders = { ...headers, Referer: baseUrl };
-      delete wafHeaders["Cookie"];
+      const cleanHeaders = { ...headers, Referer: baseUrl };
+      delete cleanHeaders["User-Agent"];
+      delete cleanHeaders["sec-ch-ua"];
+      delete cleanHeaders["sec-ch-ua-mobile"];
+      delete cleanHeaders["sec-ch-ua-platform"];
+      delete cleanHeaders["Cookie"];
 
       const wafResult = await openWebView(baseUrl, {
         title: "Solve the captcha below and click done",
         description: "Required to bypass AnimePahe Cloudflare protection.",
-        headers: wafHeaders,
+        headers: cleanHeaders,
         force: true,
         waitForCookie: "cf_clearance",
       });
@@ -89,24 +92,20 @@ export async function requestAnimePahe(
       const newUa = wafResult.userAgent || headers["User-Agent"];
 
       if (newUa) {
-        await kvStore?.set("animepahe_ua", newUa);
         headers["User-Agent"] = newUa;
+        await kvStore?.set("animepahe_ua", newUa);
       }
       if (newCookie) {
-        await kvStore?.set("animepahe_cookie", newCookie);
-        headers["Cookie"] = newCookie;
+        headers["Cookie"] =
+          (headers["Cookie"] ? headers["Cookie"] + "; " : "") + newCookie;
+        await kvStore?.set("animepahe_cookie", headers["Cookie"]);
       }
 
       return await axios({
         url: targetUrl,
         method: options.method || "GET",
         data: options.data,
-        headers: {
-          ...headers,
-          Referer: `${baseUrl}/`,
-          Cookie: newCookie,
-          "User-Agent": newUa,
-        },
+        headers,
         signal: options.signal,
       });
     }

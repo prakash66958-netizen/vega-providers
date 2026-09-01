@@ -38,33 +38,35 @@ export const getEpisodes = async function ({
     let allReleases = [...data1.data];
     const lastPage = data1.last_page || 1;
 
-    // Fetch remaining pages in parallel if more than 1 page exists
+    // Fetch remaining pages in small batches to avoid rate limits
     if (lastPage > 1) {
-      const pagePromises: Promise<any>[] = [];
-      for (let p = 2; p <= lastPage; p++) {
-        pagePromises.push(
-          requestAnimePahe(
-            `/api?m=release&id=${session}&sort=episode_asc&page=${p}`,
-            providerContext,
-          ).catch((e) => {
-            console.error(
-              `AnimePahe: Failed to fetch episodes page ${p}:`,
-              e.message,
-            );
-            return null;
-          }),
-        );
-      }
+      for (let p = 2; p <= Math.min(lastPage, 25); p += 3) {
+        const batch = [];
+        for (let i = p; i < p + 3 && i <= lastPage; i++) {
+          batch.push(
+            requestAnimePahe(
+              `/api?m=release&id=${session}&sort=episode_asc&page=${i}`,
+              providerContext,
+            ).catch((e) => {
+              console.warn(
+                `AnimePahe: Failed fetching episodes page ${i}:`,
+                e.message,
+              );
+              return null;
+            }),
+          );
+        }
 
-      const pageResponses = await Promise.all(pagePromises);
-      for (const pageRes of pageResponses) {
-        if (pageRes?.data) {
-          const pageData =
-            typeof pageRes.data === "string"
-              ? JSON.parse(pageRes.data)
-              : pageRes.data;
-          if (pageData?.data && Array.isArray(pageData.data)) {
-            allReleases.push(...pageData.data);
+        const batchRes = await Promise.all(batch);
+        for (const pageRes of batchRes) {
+          if (pageRes?.data) {
+            const pageData =
+              typeof pageRes.data === "string"
+                ? JSON.parse(pageRes.data)
+                : pageRes.data;
+            if (pageData?.data && Array.isArray(pageData.data)) {
+              allReleases.push(...pageData.data);
+            }
           }
         }
       }
@@ -77,7 +79,10 @@ export const getEpisodes = async function ({
 
     const episodes: EpisodeLink[] = [];
     for (const item of allReleases) {
-      const epNum = item.episode !== undefined && item.episode !== null ? item.episode : "";
+      const epNum =
+        item.episode !== undefined && item.episode !== null
+          ? item.episode
+          : "";
       const epTitle =
         item.title && item.title.trim() ? ` - ${item.title.trim()}` : "";
       const title = `Episode ${epNum}${epTitle}`;
