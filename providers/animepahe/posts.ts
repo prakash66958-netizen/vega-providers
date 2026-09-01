@@ -18,33 +18,48 @@ export const getPosts = async function ({
     const pageNum = page || 1;
     let endpoint = `/api?m=airing&page=${pageNum}`;
 
-    if (filter && filter !== "airing" && filter !== "all") {
-      endpoint = `/api?m=search&q=${encodeURIComponent(filter)}`;
+    if (
+      filter &&
+      filter !== "airing" &&
+      filter !== "all" &&
+      filter.trim() !== ""
+    ) {
+      endpoint = `/api?m=search&q=${encodeURIComponent(filter.trim())}`;
     }
 
     const response = await requestAnimePahe(endpoint, providerContext, {
       signal,
     });
-    const result = response.data;
+    const result =
+      typeof response.data === "string"
+        ? JSON.parse(response.data)
+        : response.data;
     const posts: Post[] = [];
 
-    if (result && Array.isArray(result.data)) {
-      for (const item of result.data) {
-        if (item.anime_session) {
-          const epSuffix = item.episode ? ` - Ep ${item.episode}` : "";
-          posts.push({
-            title: `${item.anime_title || "Anime"}${epSuffix}`,
-            link: `/anime/${item.anime_session}`,
-            image: item.snapshot || item.poster || "",
-          });
-        } else if (item.session) {
-          const yearStr = item.year ? ` (${item.year})` : "";
-          posts.push({
-            title: `${item.title || "Anime"}${yearStr}`,
-            link: `/anime/${item.session}`,
-            image: item.poster || item.snapshot || "",
-          });
-        }
+    const items = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.data)
+        ? result.data
+        : [];
+
+    for (const item of items) {
+      if (item.anime_session) {
+        const epSuffix =
+          item.episode !== undefined && item.episode !== null
+            ? ` - Ep ${item.episode}`
+            : "";
+        posts.push({
+          title: `${item.anime_title || "Anime"}${epSuffix}`,
+          link: `/anime/${item.anime_session}`,
+          image: item.snapshot || item.poster || "",
+        });
+      } else if (item.session) {
+        const yearStr = item.year ? ` (${item.year})` : "";
+        posts.push({
+          title: `${item.title || "Anime"}${yearStr}`,
+          link: `/anime/${item.session}`,
+          image: item.poster || item.snapshot || "",
+        });
       }
     }
 
@@ -75,20 +90,27 @@ export const getSearchPosts = async function ({
     const response = await requestAnimePahe(endpoint, providerContext, {
       signal,
     });
-    const result = response.data;
+    const result =
+      typeof response.data === "string"
+        ? JSON.parse(response.data)
+        : response.data;
     const posts: Post[] = [];
 
-    if (result && Array.isArray(result.data)) {
-      for (const item of result.data) {
-        if (item.session) {
-          const yearStr = item.year ? ` (${item.year})` : "";
-          const typeStr = item.type ? ` [${item.type}]` : "";
-          posts.push({
-            title: `${item.title || "Anime"}${yearStr}${typeStr}`,
-            link: `/anime/${item.session}`,
-            image: item.poster || item.snapshot || "",
-          });
-        }
+    const items = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.data)
+        ? result.data
+        : [];
+
+    for (const item of items) {
+      if (item.session) {
+        const yearStr = item.year ? ` (${item.year})` : "";
+        const typeStr = item.type ? ` [${item.type}]` : "";
+        posts.push({
+          title: `${item.title || "Anime"}${yearStr}${typeStr}`,
+          link: `/anime/${item.session}`,
+          image: item.poster || item.snapshot || "",
+        });
       }
     }
 

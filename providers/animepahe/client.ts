@@ -2,37 +2,12 @@ import { ProviderContext } from "../types";
 
 export const DEFAULT_BASE_URL = "https://animepahe.pw";
 
-export async function getBaseUrl(providerContext: ProviderContext): Promise<string> {
+export async function getBaseUrl(providerContext?: ProviderContext): Promise<string> {
   const custom = await providerContext?.kvStore?.get<string>("baseUrlOverride");
   if (custom && custom.trim()) {
     return custom.trim().replace(/\/+$/, "");
   }
   return DEFAULT_BASE_URL;
-}
-
-export async function getAnimePaheHeaders(
-  providerContext: ProviderContext,
-  baseUrl: string,
-): Promise<Record<string, string>> {
-  const kvStore = providerContext?.kvStore;
-  const userAgent =
-    (await kvStore?.get<string>("animepahe_ua")) ||
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
-  const cookie = (await kvStore?.get<string>("animepahe_cookie")) || "";
-
-  const headers: Record<string, string> = {
-    "User-Agent": userAgent,
-    Accept: "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "en-US,en;q=0.9",
-    Referer: `${baseUrl}/`,
-    "X-Requested-With": "XMLHttpRequest",
-  };
-
-  if (cookie) {
-    headers["Cookie"] = cookie;
-  }
-
-  return headers;
 }
 
 export async function requestAnimePahe(
@@ -45,7 +20,7 @@ export async function requestAnimePahe(
     isHtml?: boolean;
   } = {},
 ): Promise<any> {
-  const { axios, openWebView, kvStore } = providerContext;
+  const { axios, openWebView, kvStore, commonHeaders } = providerContext;
   const baseUrl = await getBaseUrl(providerContext);
 
   let targetUrl = endpointOrUrl;
@@ -54,10 +29,28 @@ export async function requestAnimePahe(
     targetUrl = `${baseUrl}${slash}${targetUrl}`;
   }
 
-  const headers = await getAnimePaheHeaders(providerContext, baseUrl);
-  if (options.isHtml) {
-    headers["Accept"] =
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
+  const savedUa = await kvStore?.get<string>("animepahe_ua");
+  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
+
+  const headers: Record<string, string> = {
+    ...(commonHeaders || {}),
+    "User-Agent":
+      savedUa ||
+      commonHeaders?.["User-Agent"] ||
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    Accept: options.isHtml
+      ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+      : "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: `${baseUrl}/`,
+  };
+
+  if (!options.isHtml) {
+    headers["X-Requested-With"] = "XMLHttpRequest";
+  }
+
+  if (savedCookie) {
+    headers["Cookie"] = savedCookie;
   }
 
   try {
@@ -70,42 +63,48 @@ export async function requestAnimePahe(
     });
     return response;
   } catch (error: any) {
-    // Check if Cloudflare WAF or Anti-bot blocked the request (403 Forbidden / 503 Service Unavailable)
+    // If Cloudflare WAF 403 is encountered and openWebView solver is available
     if (
       (error.response?.status === 403 || error.response?.status === 503) &&
       openWebView
     ) {
       console.log(
-        `AnimePahe: WAF challenge (Status ${error.response?.status}) detected for ${targetUrl}. Opening solver...`,
+        `AnimePahe: Cloudflare challenge (Status ${error.response?.status}) for ${targetUrl}. Opening solver...`,
       );
 
-      const cleanHeaders = { ...headers, Referer: baseUrl };
-      delete cleanHeaders["User-Agent"];
-      delete cleanHeaders["Cookie"];
-
       const wafResult = await openWebView(baseUrl, {
-        title: "AnimePahe Verification",
-        description: "Please solve the Cloudflare verification to enable streaming.",
-        headers: cleanHeaders,
-        waitForCookie: "cf_clearance",
+        title: "Solve the captcha below and click done",
+        description: "Required to bypass AnimePahe Cloudflare protection.",
+        headers: {
+          ...headers,
+          Referer: baseUrl,
+        },
         force: true,
+        waitForCookie: "cf_clearance",
       });
 
-      if (wafResult.userAgent) {
-        headers["User-Agent"] = wafResult.userAgent;
-        await kvStore?.set("animepahe_ua", wafResult.userAgent);
+      const newCookie = wafResult.cookies;
+      const newUa = wafResult.userAgent;
+
+      if (newUa) {
+        await kvStore?.set("animepahe_ua", newUa);
+        headers["User-Agent"] = newUa;
       }
-      if (wafResult.cookies) {
-        headers["Cookie"] = wafResult.cookies;
-        await kvStore?.set("animepahe_cookie", wafResult.cookies);
+      if (newCookie) {
+        await kvStore?.set("animepahe_cookie", newCookie);
+        headers["Cookie"] = newCookie;
       }
 
-      // Retry request with solved clearance
       return await axios({
         url: targetUrl,
         method: options.method || "GET",
         data: options.data,
-        headers,
+        headers: {
+          ...headers,
+          Referer: `${baseUrl}/`,
+          Cookie: newCookie,
+          "User-Agent": newUa || headers["User-Agent"],
+        },
         signal: options.signal,
       });
     }
