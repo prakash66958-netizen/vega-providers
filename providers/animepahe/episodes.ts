@@ -2,6 +2,13 @@ import { EpisodeLink, ProviderContext } from "../types";
 import { requestAnimePahe } from "./client";
 import { throwProviderError } from "../providerErrors";
 
+/**
+ * Sleep helper
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export const getEpisodes = async function ({
   url,
   providerContext,
@@ -38,27 +45,19 @@ export const getEpisodes = async function ({
     let allReleases = [...data1.data];
     const lastPage = data1.last_page || 1;
 
-    // Fetch remaining pages in small batches to avoid rate limits
+    // Fetch remaining pages SEQUENTIALLY with a delay between each
+    // to avoid 429 rate limiting from AnimePahe's API
     if (lastPage > 1) {
-      for (let p = 2; p <= Math.min(lastPage, 25); p += 3) {
-        const batch = [];
-        for (let i = p; i < p + 3 && i <= lastPage; i++) {
-          batch.push(
-            requestAnimePahe(
-              `/api?m=release&id=${session}&sort=episode_asc&page=${i}`,
-              providerContext,
-            ).catch((e) => {
-              console.warn(
-                `AnimePahe: Failed fetching episodes page ${i}:`,
-                e.message,
-              );
-              return null;
-            }),
-          );
-        }
+      for (let p = 2; p <= Math.min(lastPage, 50); p++) {
+        // 800ms delay between each page request to stay under rate limits
+        await sleep(800);
 
-        const batchRes = await Promise.all(batch);
-        for (const pageRes of batchRes) {
+        try {
+          const pageRes = await requestAnimePahe(
+            `/api?m=release&id=${session}&sort=episode_asc&page=${p}`,
+            providerContext,
+          );
+
           if (pageRes?.data) {
             const pageData =
               typeof pageRes.data === "string"
@@ -67,6 +66,18 @@ export const getEpisodes = async function ({
             if (pageData?.data && Array.isArray(pageData.data)) {
               allReleases.push(...pageData.data);
             }
+          }
+        } catch (e: any) {
+          console.warn(
+            `AnimePahe: Failed fetching episodes page ${p}:`,
+            e.message,
+          );
+          // If we get rate-limited even after retry, stop fetching more pages
+          if (e.response?.status === 429) {
+            console.warn(
+              "AnimePahe: Stopping episode pagination due to rate limit.",
+            );
+            break;
           }
         }
       }
