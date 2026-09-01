@@ -3,7 +3,7 @@ import { ProviderContext } from "../types";
 export const DEFAULT_BASE_URL = "https://animepahe.pw";
 
 export async function getBaseUrl(providerContext: ProviderContext): Promise<string> {
-  const custom = await providerContext.kvStore.get<string>("baseUrlOverride");
+  const custom = await providerContext?.kvStore?.get<string>("baseUrlOverride");
   if (custom && custom.trim()) {
     return custom.trim().replace(/\/+$/, "");
   }
@@ -14,11 +14,11 @@ export async function getAnimePaheHeaders(
   providerContext: ProviderContext,
   baseUrl: string,
 ): Promise<Record<string, string>> {
-  const { kvStore } = providerContext;
+  const kvStore = providerContext?.kvStore;
   const userAgent =
-    (await kvStore.get<string>("animepahe_ua")) ||
+    (await kvStore?.get<string>("animepahe_ua")) ||
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
-  const cookie = (await kvStore.get<string>("animepahe_cookie")) || "";
+  const cookie = (await kvStore?.get<string>("animepahe_cookie")) || "";
 
   const headers: Record<string, string> = {
     "User-Agent": userAgent,
@@ -93,11 +93,11 @@ export async function requestAnimePahe(
 
       if (wafResult.userAgent) {
         headers["User-Agent"] = wafResult.userAgent;
-        await kvStore.set("animepahe_ua", wafResult.userAgent);
+        await kvStore?.set("animepahe_ua", wafResult.userAgent);
       }
       if (wafResult.cookies) {
         headers["Cookie"] = wafResult.cookies;
-        await kvStore.set("animepahe_cookie", wafResult.cookies);
+        await kvStore?.set("animepahe_cookie", wafResult.cookies);
       }
 
       // Retry request with solved clearance

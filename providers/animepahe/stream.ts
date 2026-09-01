@@ -30,8 +30,10 @@ export const getStream = async function ({
     const $ = cheerio.load(html);
 
     // Read user configuration from settings
-    const preferredQuality = (await kvStore.get<string>("preferredQuality")) || "auto";
-    const preferredAudio = (await kvStore.get<string>("preferredAudio")) || "all";
+    const preferredQuality =
+      (await kvStore?.get<string>("preferredQuality")) || "auto";
+    const preferredAudio =
+      (await kvStore?.get<string>("preferredAudio")) || "all";
 
     interface ServerCandidate {
       label: string;

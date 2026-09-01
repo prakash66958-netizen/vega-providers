@@ -1,5 +1,6 @@
 import { Post, ProviderContext } from "../types";
 import { requestAnimePahe } from "./client";
+import { throwProviderError } from "../providerErrors";
 
 export const getPosts = async function ({
   filter,
@@ -18,7 +19,6 @@ export const getPosts = async function ({
     let endpoint = `/api?m=airing&page=${pageNum}`;
 
     if (filter && filter !== "airing" && filter !== "all") {
-      // If a genre or keyword is passed, search for it
       endpoint = `/api?m=search&q=${encodeURIComponent(filter)}`;
     }
 
@@ -30,7 +30,6 @@ export const getPosts = async function ({
 
     if (result && Array.isArray(result.data)) {
       for (const item of result.data) {
-        // Airing format
         if (item.anime_session) {
           const epSuffix = item.episode ? ` - Ep ${item.episode}` : "";
           posts.push({
@@ -38,9 +37,7 @@ export const getPosts = async function ({
             link: `/anime/${item.anime_session}`,
             image: item.snapshot || item.poster || "",
           });
-        }
-        // Search / Anime list format
-        else if (item.session) {
+        } else if (item.session) {
           const yearStr = item.year ? ` (${item.year})` : "";
           posts.push({
             title: `${item.title || "Anime"}${yearStr}`,
@@ -53,8 +50,7 @@ export const getPosts = async function ({
 
     return posts;
   } catch (error) {
-    console.error("AnimePahe getPosts error:", error);
-    return [];
+    throwProviderError("AnimePahe", "getPosts", error);
   }
 };
 
@@ -98,7 +94,6 @@ export const getSearchPosts = async function ({
 
     return posts;
   } catch (error) {
-    console.error("AnimePahe getSearchPosts error:", error);
-    return [];
+    throwProviderError("AnimePahe", "getSearchPosts", error);
   }
 };
