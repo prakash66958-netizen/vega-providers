@@ -2,6 +2,15 @@ import { Post, ProviderContext } from "../types";
 import { requestAnimePahe } from "./client";
 import { throwProviderError } from "../providerErrors";
 
+function formatImageUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  let img = rawUrl.trim();
+  if (img.startsWith("//")) {
+    img = "https:" + img;
+  }
+  return img;
+}
+
 function parseJsonSafe(data: any): any {
   if (!data) return null;
   if (typeof data === "object") return data;
@@ -47,12 +56,13 @@ export const getPosts = async function ({
 
     const response = await requestAnimePahe(endpoint, providerContext, {
       signal,
+      allowWebView: true,
     });
 
     const posts: Post[] = [];
     const jsonResult = parseJsonSafe(response?.data);
 
-    // 1. If API returned JSON, parse items from JSON
+    // 1. Parse JSON response if available
     if (jsonResult) {
       const items = Array.isArray(jsonResult)
         ? jsonResult
@@ -66,17 +76,19 @@ export const getPosts = async function ({
             item.episode !== undefined && item.episode !== null
               ? ` - Ep ${item.episode}`
               : "";
+          const img = formatImageUrl(item.snapshot || item.poster || "");
           posts.push({
             title: `${item.anime_title || "Anime"}${epSuffix}`,
             link: `/anime/${item.anime_session}`,
-            image: item.snapshot || item.poster || "",
+            image: img,
           });
         } else if (item.session) {
           const yearStr = item.year ? ` (${item.year})` : "";
+          const img = formatImageUrl(item.poster || item.snapshot || "");
           posts.push({
             title: `${item.title || "Anime"}${yearStr}`,
             link: `/anime/${item.session}`,
-            image: item.poster || item.snapshot || "",
+            image: img,
           });
         }
       }
@@ -86,7 +98,7 @@ export const getPosts = async function ({
       }
     }
 
-    // 2. Fallback: If response was HTML, scrape posts from HTML elements
+    // 2. Fallback: Parse HTML if response is HTML
     const rawHtml = typeof response?.data === "string" ? response.data : "";
     if (rawHtml && cheerio) {
       const $ = cheerio.load(rawHtml);
@@ -95,7 +107,8 @@ export const getPosts = async function ({
         (_, el) => {
           const anchor = $(el).is("a") ? $(el) : $(el).find("a").first();
           const href = anchor.attr("href") || "";
-          const img = $(el).find("img").attr("src") || anchor.find("img").attr("src") || "";
+          const rawImg = $(el).find("img").attr("src") || anchor.find("img").attr("src") || "";
+          const img = formatImageUrl(rawImg);
           const title =
             anchor.attr("title") ||
             $(el).find(".title, .anime-title, h2, h3").first().text().trim() ||
@@ -105,7 +118,7 @@ export const getPosts = async function ({
             posts.push({
               title,
               link: href.startsWith("http") ? new URL(href).pathname : href,
-              image: img.startsWith("//") ? `https:${img}` : img,
+              image: img,
             });
           }
         },
@@ -140,12 +153,12 @@ export const getSearchPosts = async function ({
     const endpoint = `/api?m=search&q=${encodeURIComponent(searchQuery.trim())}`;
     const response = await requestAnimePahe(endpoint, providerContext, {
       signal,
+      allowWebView: true,
     });
 
     const posts: Post[] = [];
     const jsonResult = parseJsonSafe(response?.data);
 
-    // 1. If API returned JSON, parse items from JSON
     if (jsonResult) {
       const items = Array.isArray(jsonResult)
         ? jsonResult
@@ -157,10 +170,11 @@ export const getSearchPosts = async function ({
         if (item.session) {
           const yearStr = item.year ? ` (${item.year})` : "";
           const typeStr = item.type ? ` [${item.type}]` : "";
+          const img = formatImageUrl(item.poster || item.snapshot || "");
           posts.push({
             title: `${item.title || "Anime"}${yearStr}${typeStr}`,
             link: `/anime/${item.session}`,
-            image: item.poster || item.snapshot || "",
+            image: img,
           });
         }
       }
@@ -170,7 +184,6 @@ export const getSearchPosts = async function ({
       }
     }
 
-    // 2. Fallback: If response was HTML, scrape search results from HTML
     const rawHtml = typeof response?.data === "string" ? response.data : "";
     if (rawHtml && cheerio) {
       const $ = cheerio.load(rawHtml);
@@ -178,13 +191,14 @@ export const getSearchPosts = async function ({
       $("a[href*='/anime/']").each((_, el) => {
         const href = $(el).attr("href") || "";
         const title = $(el).attr("title") || $(el).text().trim();
-        const img = $(el).find("img").attr("src") || "";
+        const rawImg = $(el).find("img").attr("src") || "";
+        const img = formatImageUrl(rawImg);
 
         if (href && href.includes("/anime/") && title && !posts.some((p) => p.link === href)) {
           posts.push({
             title,
             link: href.startsWith("http") ? new URL(href).pathname : href,
-            image: img.startsWith("//") ? `https:${img}` : img,
+            image: img,
           });
         }
       });

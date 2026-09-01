@@ -2,6 +2,9 @@ import { ProviderContext } from "../types";
 
 export const DEFAULT_BASE_URL = "https://animepahe.pw";
 
+let isSolvingWaf = false;
+let lastSolvedAt = 0;
+
 export async function getBaseUrl(
   providerContext?: ProviderContext,
 ): Promise<string> {
@@ -32,7 +35,7 @@ function extractDataFromWaf(rawData: string): any {
     try {
       return JSON.parse(preMatch[1].trim());
     } catch {
-      // Not strict JSON, continue
+      // Continue
     }
   }
 
@@ -58,18 +61,14 @@ function extractDataFromWaf(rawData: string): any {
     }
   }
 
-  // 4. Return raw string
   return rawData;
 }
 
 /**
- * Robust request handler:
- * 1. Checks kvStore for saved Cloudflare cookies & User-Agent.
- * 2. Attempts HTTP request with Axios.
- * 3. On 403 Cloudflare WAF: Opens the targetUrl in the device WebView.
- *    Captures cookies & User-Agent, saves to kvStore.
- *    Returns parsed JSON if already present in WebView, or performs verified Axios request.
- * 4. On 429: Retries with exponential backoff.
+ * Unified request handler:
+ * - Prevents multiple WebViews from opening simultaneously or spamming the user.
+ * - Caches and reuses cookies & User-Agent in kvStore.
+ * - Never opens WebViews on sub-calls or background pagination.
  */
 export async function requestAnimePahe(
   endpointOrUrl: string,
@@ -79,6 +78,7 @@ export async function requestAnimePahe(
     data?: any;
     signal?: AbortSignal;
     isHtml?: boolean;
+    allowWebView?: boolean;
   } = {},
 ): Promise<any> {
   const { axios, openWebView, kvStore, commonHeaders } = providerContext;
@@ -109,10 +109,10 @@ export async function requestAnimePahe(
     headers["Cookie"] = savedCookie;
   }
 
-  const MAX_429_RETRIES = 3;
-  const BACKOFF_MS = [2000, 5000, 10000];
+  const MAX_RETRIES = 2;
+  const BACKOFF_MS = [1500, 3000];
 
-  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const response = await axios({
         url: targetUrl,
@@ -125,66 +125,69 @@ export async function requestAnimePahe(
     } catch (error: any) {
       const status = error.response?.status;
 
-      // --- Cloudflare WAF (403 / 503) ---
-      if ((status === 403 || status === 503) && openWebView) {
-        console.log(
-          `AnimePahe: Cloudflare challenge (${status}) for ${targetUrl}. Opening WebView solver...`,
-        );
+      // Rate limit (429) backoff
+      if (status === 429 && attempt < MAX_RETRIES) {
+        const waitMs = BACKOFF_MS[attempt] || 3000;
+        console.log(`AnimePahe: 429 rate limit. Backing off ${waitMs}ms...`);
+        await sleep(waitMs);
+        continue;
+      }
 
-        const cleanHeaders: Record<string, string> = {
-          Referer: `${baseUrl}/`,
-          Accept: headers["Accept"] || "*/*",
-        };
+      // Cloudflare WAF (403/503): Open solver ONLY if allowWebView is enabled and not already solving
+      if (
+        (status === 403 || status === 503) &&
+        openWebView &&
+        options.allowWebView !== false &&
+        !isSolvingWaf &&
+        Date.now() - lastSolvedAt > 15000
+      ) {
+        isSolvingWaf = true;
+        try {
+          console.log(`AnimePahe: Solving Cloudflare verification on ${baseUrl}...`);
 
-        const wafResult = await openWebView(targetUrl, {
-          title: "AnimePahe Security Check",
-          description: "Please complete the verification once to continue.",
-          headers: cleanHeaders,
-          waitForCookie: "cf_clearance",
-          force: true,
-        });
+          const cleanHeaders: Record<string, string> = {
+            Referer: `${baseUrl}/`,
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          };
 
-        // Extract cookie string
-        let newCookie = wafResult.cookies || (wafResult as any).cookie || "";
-        if (!newCookie && wafResult.cookieMap) {
-          newCookie = Object.entries(wafResult.cookieMap)
-            .map(([k, v]) => `${k}=${v}`)
-            .join("; ");
-        }
+          const wafResult = await openWebView(baseUrl, {
+            title: "AnimePahe Verification",
+            description: "Please solve the security verification once to continue.",
+            headers: cleanHeaders,
+            waitForCookie: "cf_clearance",
+            force: true,
+          });
 
-        const newUa = wafResult.userAgent || savedUa;
+          lastSolvedAt = Date.now();
 
-        // Persist credentials in kvStore so all subsequent calls reuse them
-        if (newCookie) {
-          await kvStore?.set("animepahe_cookie", newCookie);
-          headers["Cookie"] = newCookie;
-        }
-        if (newUa) {
-          await kvStore?.set("animepahe_ua", newUa);
-          headers["User-Agent"] = newUa;
-        }
+          let newCookie = wafResult.cookies || (wafResult as any).cookie || "";
+          if (!newCookie && wafResult.cookieMap) {
+            newCookie = Object.entries(wafResult.cookieMap)
+              .map(([k, v]) => `${k}=${v}`)
+              .join("; ");
+          }
 
-        // Check if the WebView returned valid JSON or final non-challenge HTML
-        if (wafResult.data && wafResult.data.trim()) {
-          const parsed = extractDataFromWaf(wafResult.data);
-          const isJsonObject = parsed && typeof parsed === "object";
-          const isCfHtml =
-            typeof parsed === "string" &&
-            (parsed.includes("Just a moment") ||
-              parsed.includes("cf-challenge") ||
-              parsed.includes("turnstile"));
+          const newUa = wafResult.userAgent || savedUa;
 
-          if (isJsonObject || (options.isHtml && !isCfHtml)) {
+          if (newCookie) {
+            await kvStore?.set("animepahe_cookie", newCookie);
+            headers["Cookie"] = newCookie;
+          }
+          if (newUa) {
+            await kvStore?.set("animepahe_ua", newUa);
+            headers["User-Agent"] = newUa;
+          }
+
+          // If the solved target was the homepage itself, return data
+          if (targetUrl === baseUrl && wafResult.data) {
             return {
-              data: parsed,
+              data: wafResult.data,
               status: 200,
               headers: {},
             };
           }
-        }
 
-        // Retry request with fresh cookies and User-Agent
-        try {
+          // Retry the actual target request with the newly saved credentials
           return await axios({
             url: targetUrl,
             method: options.method || "GET",
@@ -192,30 +195,11 @@ export async function requestAnimePahe(
             headers,
             signal: options.signal,
           });
-        } catch (retryErr) {
-          // If secondary call fails, return whatever data we extracted from the WebView
-          if (wafResult.data) {
-            return {
-              data: extractDataFromWaf(wafResult.data),
-              status: 200,
-              headers: {},
-            };
-          }
-          throw retryErr;
+        } catch (wafErr) {
+          console.error("AnimePahe: WebView verification failed or cancelled:", wafErr);
+        } finally {
+          isSolvingWaf = false;
         }
-      }
-
-      // --- Rate Limiting (429) ---
-      if (status === 429 && attempt < MAX_429_RETRIES) {
-        const retryAfter = error.response?.headers?.["retry-after"];
-        const waitMs = retryAfter
-          ? parseInt(retryAfter, 10) * 1000
-          : BACKOFF_MS[attempt] || 5000;
-        console.log(
-          `AnimePahe: Rate limited (429). Retrying in ${waitMs}ms... (attempt ${attempt + 1}/${MAX_429_RETRIES})`,
-        );
-        await sleep(waitMs);
-        continue;
       }
 
       throw error;

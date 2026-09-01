@@ -59,6 +59,7 @@ export const getStream = async function ({
 
     const response = await requestAnimePahe(playUrl, providerContext, {
       isHtml: true,
+      allowWebView: false,
       signal,
     });
     const html: string = typeof response.data === "string" ? response.data : "";
@@ -80,7 +81,6 @@ export const getStream = async function ({
 
     const candidates: ServerCandidate[] = [];
 
-    // Helper to add unique candidate
     const addCandidate = (
       kwikUrl: string,
       resVal: string = "720",
@@ -104,7 +104,7 @@ export const getStream = async function ({
       });
     };
 
-    // 1. Find all resolution and download buttons
+    // 1. Find resolution and download buttons
     $(
       "button[data-src], #resolutionMenu button, #dropDownload a, div#pickDownload a, a[data-src], a[href*='kwik']",
     ).each((_, el) => {
@@ -134,7 +134,7 @@ export const getStream = async function ({
       }
     });
 
-    // 3. Regex fallback across full HTML for any kwik embed / download URLs
+    // 3. Regex fallback across full HTML
     const kwikRegex =
       /https?:\/\/[a-zA-Z0-9.-]*kwik\.[a-z]+\/[ef]\/[a-zA-Z0-9]+/gi;
     let match: RegExpExecArray | null;
@@ -143,21 +143,16 @@ export const getStream = async function ({
     }
 
     if (candidates.length === 0) {
-      console.warn(
-        "AnimePahe: No server candidates found on play page:",
-        playUrl,
-      );
       return [];
     }
 
-    // Resolve candidates sequentially with delays
     const streams: Stream[] = [];
 
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i];
 
       if (i > 0) {
-        await sleep(800);
+        await sleep(500);
       }
 
       try {
@@ -201,12 +196,7 @@ export const getStream = async function ({
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
           },
         });
-      } catch (err) {
-        console.error(
-          "AnimePahe failed resolving candidate:",
-          candidate.label,
-          err,
-        );
+      } catch {
         streams.push({
           server: candidate.label,
           link: candidate.kwikUrl,

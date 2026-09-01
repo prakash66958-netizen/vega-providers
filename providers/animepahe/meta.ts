@@ -2,6 +2,15 @@ import { Info, ProviderContext } from "../types";
 import { requestAnimePahe } from "./client";
 import { throwProviderError } from "../providerErrors";
 
+function formatImageUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  let img = rawUrl.trim();
+  if (img.startsWith("//")) {
+    img = "https:" + img;
+  }
+  return img;
+}
+
 export const getMeta = async function ({
   link,
   providerContext,
@@ -18,6 +27,7 @@ export const getMeta = async function ({
   try {
     const response = await requestAnimePahe(animeUrl, providerContext, {
       isHtml: true,
+      allowWebView: false,
     });
     const html = typeof response.data === "string" ? response.data : "";
     const $ = cheerio.load(html);
@@ -30,14 +40,12 @@ export const getMeta = async function ({
     const japaneseTitle = $("div.title-wrapper h2").first().text().trim();
 
     // Extract Poster
-    let image =
+    let rawImage =
       $("div.anime-poster a").attr("href") ||
       $("div.anime-poster img").attr("src") ||
       $("div.poster img").attr("src") ||
       "";
-    if (image.startsWith("//")) {
-      image = "https:" + image;
-    }
+    const image = formatImageUrl(rawImage);
 
     // Extract Synopsis
     const synopsis = $("div.anime-synopsis").text().trim() || "";

@@ -41,7 +41,7 @@ export async function kwikExtractor(
   signal?: AbortSignal,
   referer: string = "https://animepahe.pw/",
 ): Promise<{ streamUrl: string; type: string } | null> {
-  const { axios, commonHeaders, openWebView, kvStore } = providerContext;
+  const { axios, commonHeaders, kvStore } = providerContext;
 
   const savedUa = await kvStore?.get<string>("animepahe_ua");
   const savedCookie = await kvStore?.get<string>("animepahe_cookie");
@@ -62,31 +62,9 @@ export async function kwikExtractor(
     try {
       const res = await axios.get(kwikUrl, { headers, signal });
       html = typeof res?.data === "string" ? res.data : "";
-    } catch (err: any) {
-      if (
-        (err.response?.status === 403 || err.response?.status === 503) &&
-        openWebView
-      ) {
-        console.log(`kwikExtractor: WAF challenge for ${kwikUrl}, opening solver...`);
-        const wafResult = await openWebView(kwikUrl, {
-          title: "Kwik Video Verification",
-          description: "Required once to start video streaming.",
-          headers: { Referer: referer },
-          waitForCookie: "cf_clearance",
-          force: true,
-        });
-
-        html = wafResult.data || "";
-
-        if (wafResult.cookies) {
-          headers["Cookie"] = wafResult.cookies;
-        }
-        if (wafResult.userAgent) {
-          headers["User-Agent"] = wafResult.userAgent;
-        }
-      } else {
-        throw err;
-      }
+    } catch {
+      // Fallback directly without opening WebView
+      return { streamUrl: kwikUrl, type: "embed" };
     }
 
     if (!html) {
@@ -105,7 +83,7 @@ export async function kwikExtractor(
 
     const searchContext = html + "\n" + unpacked;
 
-    // 1. Look for direct .m3u8 source URL (specific patterns)
+    // 1. Look for direct .m3u8 source URL
     const m3u8Match =
       searchContext.match(
         /const\s+source\s*=\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/i,
@@ -119,7 +97,7 @@ export async function kwikExtractor(
       return { streamUrl: m3u8Match[1], type: "m3u8" };
     }
 
-    // 2. Look for direct .mp4 source URL (specific patterns)
+    // 2. Look for direct .mp4 source URL
     const mp4Match =
       searchContext.match(
         /src\s*:\s*['"](https?:\/\/[^'"]+\.mp4[^'"]*)['"]/i,
@@ -168,8 +146,8 @@ export async function kwikExtractor(
             type: downloadLocation.includes(".m3u8") ? "m3u8" : "mp4",
           };
         }
-      } catch (postErr) {
-        console.warn("kwikExtractor: POST form failed:", postErr);
+      } catch {
+        // Continue to fallback
       }
     }
 

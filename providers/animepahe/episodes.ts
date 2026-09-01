@@ -6,6 +6,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function formatImageUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  let img = rawUrl.trim();
+  if (img.startsWith("//")) {
+    img = "https:" + img;
+  }
+  return img;
+}
+
 function parseJsonSafe(data: any): any {
   if (!data) return null;
   if (typeof data === "object") return data;
@@ -45,9 +54,11 @@ export const getEpisodes = async function ({
       return [];
     }
 
-    // Fetch Page 1 of episodes
+    // Fetch Page 1 of episodes (never open webview on background pagination)
     const page1Url = `/api?m=release&id=${session}&sort=episode_asc&page=1`;
-    const res1 = await requestAnimePahe(page1Url, providerContext);
+    const res1 = await requestAnimePahe(page1Url, providerContext, {
+      allowWebView: false,
+    });
     const data1 = parseJsonSafe(res1?.data);
 
     if (!data1 || !Array.isArray(data1.data)) {
@@ -57,17 +68,16 @@ export const getEpisodes = async function ({
     let allReleases = [...data1.data];
     const lastPage = data1.last_page || 1;
 
-    // Fetch remaining pages SEQUENTIALLY with a delay between each
-    // to avoid 429 rate limiting from AnimePahe's API
+    // Fetch remaining pages sequentially with delays
     if (lastPage > 1) {
       for (let p = 2; p <= Math.min(lastPage, 50); p++) {
-        // 1200ms delay between each page to stay well under rate limits
-        await sleep(1200);
+        await sleep(1000);
 
         try {
           const pageRes = await requestAnimePahe(
             `/api?m=release&id=${session}&sort=episode_asc&page=${p}`,
             providerContext,
+            { allowWebView: false },
           );
 
           if (pageRes?.data) {
@@ -82,9 +92,6 @@ export const getEpisodes = async function ({
             e.message,
           );
           if (e.response?.status === 429) {
-            console.warn(
-              "AnimePahe: Stopping episode pagination due to rate limit.",
-            );
             break;
           }
         }
@@ -115,7 +122,7 @@ export const getEpisodes = async function ({
       episodes.push({
         title,
         link: playLink,
-        image: item.snapshot || "",
+        image: formatImageUrl(item.snapshot || ""),
         description: descParts.join(" • "),
         quickDownload: true,
       });
