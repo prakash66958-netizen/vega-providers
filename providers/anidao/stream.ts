@@ -28,6 +28,92 @@ function safeUnpack(code: string): string {
   }
 }
 
+async function parseMasterPlaylist(
+  masterUrl: string,
+  axios: any,
+  subtitles?: TextTracks,
+): Promise<Stream[]> {
+  const streams: Stream[] = [];
+  try {
+    const res = await axios.get(masterUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+      },
+    });
+
+    const body = typeof res.data === "string" ? res.data : "";
+    if (!body || !body.includes("#EXTM3U")) {
+      return [
+        {
+          server: "AniDao (Adaptive HLS)",
+          link: masterUrl,
+          type: "m3u8",
+          subtitles,
+        },
+      ];
+    }
+
+    const lines = body.split("\n");
+    const childQualities: { quality: "1080" | "720" | "480" | "360"; link: string }[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("#EXT-X-STREAM-INF:")) {
+        const nextLine = lines[i + 1] ? lines[i + 1].trim() : "";
+        if (nextLine && !nextLine.startsWith("#")) {
+          const fullUrl = new URL(nextLine, masterUrl).href;
+          let q: "1080" | "720" | "480" | "360" = "1080";
+          if (line.includes("1920x1080") || line.includes('1080p"') || line.includes("1080")) {
+            q = "1080";
+          } else if (line.includes("1280x720") || line.includes('720p"') || line.includes("720")) {
+            q = "720";
+          } else if (line.includes("854x480") || line.includes("852x480") || line.includes('480p"') || line.includes("480")) {
+            q = "480";
+          } else if (line.includes("640x360") || line.includes('360p"') || line.includes("360")) {
+            q = "360";
+          }
+
+          if (!childQualities.some((c) => c.link === fullUrl)) {
+            childQualities.push({ quality: q, link: fullUrl });
+          }
+        }
+      }
+    }
+
+    // Sort 1080p first, then 720p, 480p, 360p
+    const qualityRank: Record<string, number> = { "1080": 1, "720": 2, "480": 3, "360": 4 };
+    childQualities.sort((a, b) => (qualityRank[a.quality] || 9) - (qualityRank[b.quality] || 9));
+
+    for (const cq of childQualities) {
+      streams.push({
+        server: `AniDao ${cq.quality}p (Direct)`,
+        link: cq.link,
+        type: "m3u8",
+        quality: cq.quality,
+        subtitles,
+      });
+    }
+
+    // Add Master Auto Stream
+    streams.push({
+      server: "AniDao Auto (Adaptive HLS)",
+      link: masterUrl,
+      type: "m3u8",
+      subtitles,
+    });
+  } catch {
+    streams.push({
+      server: "AniDao (Adaptive HLS)",
+      link: masterUrl,
+      type: "m3u8",
+      subtitles,
+    });
+  }
+
+  return streams;
+}
+
 export const getStream = async function ({
   link,
   signal,
@@ -109,46 +195,13 @@ export const getStream = async function ({
         const srcMatch = embedHtml.match(/const\s+src\s*=\s*["']([^"']+)["']/);
         if (srcMatch && srcMatch[1]) {
           const streamUrl = srcMatch[1];
-
-          // 1080p Direct
-          if (streamUrl.endsWith("master.m3u8")) {
-            const baseFolder = streamUrl.replace(/master\.m3u8.*$/, "");
-            streams.push({
-              server: "Vibe 1080p (Fast Edge)",
-              link: `${baseFolder}1080p/index.m3u8`,
-              type: "m3u8",
-              quality: "1080",
-              subtitles: subtitles.length > 0 ? subtitles : undefined,
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-              },
-            });
-            streams.push({
-              server: "Vibe 720p (Fast Edge)",
-              link: `${baseFolder}720p/index.m3u8`,
-              type: "m3u8",
-              quality: "720",
-              subtitles: subtitles.length > 0 ? subtitles : undefined,
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-              },
-            });
+          const subTracks = subtitles.length > 0 ? subtitles : undefined;
+          const parsed = await parseMasterPlaylist(streamUrl, axios, subTracks);
+          for (const s of parsed) {
+            if (!streams.some((existing) => existing.link === s.link)) {
+              streams.push(s);
+            }
           }
-
-          // Master Auto playlist
-          streams.push({
-            server: "Vibe Auto (Adaptive HLS)",
-            link: streamUrl,
-            type: "m3u8",
-            quality: "1080",
-            subtitles: subtitles.length > 0 ? subtitles : undefined,
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            },
-          });
         }
 
         // Strategy 2: Packer eval(function(p,a,c,k,e,d)...)
@@ -172,18 +225,13 @@ export const getStream = async function ({
                     ? chosen
                     : `${new URL(iframeUrl).origin}${chosen}`;
 
-                  streams.push({
-                    server: "Otaku Stream (1080p)",
-                    link: resolvedUrl,
-                    type: "m3u8",
-                    quality: "1080",
-                    subtitles: subtitles.length > 0 ? subtitles : undefined,
-                    headers: {
-                      "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-                      Referer: `${new URL(iframeUrl).origin}/`,
-                    },
-                  });
+                  const subTracks = subtitles.length > 0 ? subtitles : undefined;
+                  const parsed = await parseMasterPlaylist(resolvedUrl, axios, subTracks);
+                  for (const s of parsed) {
+                    if (!streams.some((existing) => existing.link === s.link)) {
+                      streams.push(s);
+                    }
+                  }
                 }
               } catch {}
             }
