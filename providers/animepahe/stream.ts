@@ -1,6 +1,6 @@
 import { ProviderContext, Stream } from "../types";
 import { kwikExtractor } from "../extractors/kwik";
-import { getBaseUrl, requestAnimePahe, ensureCfClearance } from "./client";
+import { getBaseUrl, requestAnimePahe } from "./client";
 import { throwProviderError } from "../providerErrors";
 
 function sleep(ms: number): Promise<void> {
@@ -23,7 +23,6 @@ export const getStream = async function ({
   const baseUrl = await getBaseUrl(providerContext);
 
   try {
-    await ensureCfClearance(providerContext);
 
     // If the link is already a direct kwik or video link
     if (

@@ -1,5 +1,5 @@
 import { EpisodeLink, ProviderContext } from "../types";
-import { requestAnimePahe, ensureCfClearance } from "./client";
+import { requestAnimePahe } from "./client";
 import { throwProviderError } from "../providerErrors";
 
 /**
@@ -17,7 +17,6 @@ export const getEpisodes = async function ({
   providerContext: ProviderContext;
 }): Promise<EpisodeLink[]> {
   try {
-    await ensureCfClearance(providerContext);
     const urlObj = new URL(
       url.startsWith("http")
         ? url

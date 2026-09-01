@@ -17,93 +17,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Ensure we have valid Cloudflare cookies ONCE.
- * If already solved recently (within 10 min), skip.
- * Called at the start of each module's entry point.
- */
-export async function ensureCfClearance(
-  providerContext: ProviderContext,
-): Promise<void> {
-  const { axios, openWebView, kvStore, commonHeaders } = providerContext;
-  const baseUrl = await getBaseUrl(providerContext);
-
-  // Check if we already have a recent solve
-  const solvedAt = await kvStore?.get<number>("animepahe_solved_at");
-  if (solvedAt && Date.now() - solvedAt < 10 * 60 * 1000) {
-    // Solved within last 10 minutes — cookies should still be valid
-    return;
-  }
-
-  // Try a lightweight request to see if we already have access
-  const savedUa = await kvStore?.get<string>("animepahe_ua");
-  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
-
-  const headers: Record<string, string> = {
-    ...(commonHeaders || {}),
-    Referer: `${baseUrl}/`,
-    Accept:
-      "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  };
-
-  if (savedUa) headers["User-Agent"] = savedUa;
-  if (savedCookie) headers["Cookie"] = savedCookie;
-
-  try {
-    await axios({ url: baseUrl, method: "GET", headers });
-    // Success — mark as solved so we don't recheck
-    await kvStore?.set("animepahe_solved_at", Date.now());
-    return;
-  } catch (err: any) {
-    const status = err.response?.status;
-    if (status !== 403 && status !== 503) {
-      // Some other error (network, 5xx, etc.), skip WAF solve
-      return;
-    }
-  }
-
-  // We need to solve Cloudflare
-  if (!openWebView) return;
-
-  console.log("AnimePahe: Solving Cloudflare challenge via WebView...");
-
-  const cleanHeaders: Record<string, string> = { Referer: baseUrl };
-  const wafResult = await openWebView(baseUrl, {
-    title: "Solve the captcha below and click done",
-    description: "Required to access AnimePahe.",
-    headers: cleanHeaders,
-    force: true,
-    waitForCookie: "cf_clearance",
-  });
-
-  // Extract ALL cookies
-  let newCookie = wafResult.cookies || (wafResult as any).cookie || "";
-  if (!newCookie && wafResult.cookieMap) {
-    newCookie = Object.entries(wafResult.cookieMap)
-      .map(([k, v]) => `${k}=${v}`)
-      .join("; ");
-  }
-
-  const newUa = wafResult.userAgent || savedUa;
-
-  if (newUa) {
-    await kvStore?.set("animepahe_ua", newUa);
-  }
-  if (newCookie) {
-    await kvStore?.set("animepahe_cookie", newCookie);
-  }
-  await kvStore?.set("animepahe_solved_at", Date.now());
-
-  console.log("AnimePahe: Cloudflare solved. Cookies cached.");
-}
-
-/**
- * Core request function.
+ * Core request function — follows the same proven pattern as zcloud.ts:
  *
- * Key design:
- * - Does NOT open WebView. WebView is only opened once via ensureCfClearance().
- * - On 429: retries with long exponential backoff (3s → 8s → 15s).
- * - On 403: clears cached cookies so the NEXT call to ensureCfClearance() re-solves.
- * - On 429 after max retries: throws so the app shows a clean error.
+ * 1. Make the request with commonHeaders
+ * 2. If 403 → open WebView → put cookies directly into headers → retry ONCE
+ * 3. If 429 → exponential backoff retry
+ *
+ * No pre-flight checks, no kvStore cookie management, no ensureCfClearance.
+ * Cookies flow directly from WebView result → retry headers in the same call.
  */
 export async function requestAnimePahe(
   endpointOrUrl: string,
@@ -115,7 +36,7 @@ export async function requestAnimePahe(
     isHtml?: boolean;
   } = {},
 ): Promise<any> {
-  const { axios, kvStore, commonHeaders } = providerContext;
+  const { axios, openWebView, commonHeaders } = providerContext;
   const baseUrl = await getBaseUrl(providerContext);
 
   let targetUrl = endpointOrUrl;
@@ -124,9 +45,7 @@ export async function requestAnimePahe(
     targetUrl = `${baseUrl}${slash}${targetUrl}`;
   }
 
-  const savedUa = await kvStore?.get<string>("animepahe_ua");
-  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
-
+  // Start with commonHeaders only — let the Vega app's injected headers do their job
   const headers: Record<string, string> = {
     ...(commonHeaders || {}),
     Referer: `${baseUrl}/`,
@@ -136,18 +55,10 @@ export async function requestAnimePahe(
     "Accept-Language": "en-US,en;q=0.9",
   };
 
-  if (savedUa) {
-    headers["User-Agent"] = savedUa;
-  }
-  if (savedCookie) {
-    headers["Cookie"] = savedCookie;
-  }
-
-  const MAX_RETRIES = 3;
-  // Backoff: 3s → 8s → 15s (much more conservative than before)
+  const MAX_429_RETRIES = 3;
   const BACKOFF_MS = [3000, 8000, 15000];
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
     try {
       const response = await axios({
         url: targetUrl,
@@ -160,27 +71,55 @@ export async function requestAnimePahe(
     } catch (error: any) {
       const status = error.response?.status;
 
-      // 429: Rate limited — wait longer
-      if (status === 429 && attempt < MAX_RETRIES) {
+      // --- Handle 403/503 Cloudflare WAF (exactly like zcloud.ts) ---
+      if ((status === 403 || status === 503) && openWebView) {
+        console.log(
+          `AnimePahe: WAF detected (${status}) for ${targetUrl}, using solver...`,
+        );
+
+        // Clean headers before passing to WebView (same as zcloud)
+        const cleanHeaders = { ...headers, Referer: baseUrl };
+        delete cleanHeaders["User-Agent"];
+        delete cleanHeaders["sec-ch-ua"];
+        delete cleanHeaders["sec-ch-ua-mobile"];
+        delete cleanHeaders["sec-ch-ua-platform"];
+        delete cleanHeaders["Cookie"];
+
+        const wafResult = await openWebView(baseUrl, {
+          title: "Solve the captcha below and click done",
+          description: "Required to bypass AnimePahe Cloudflare protection.",
+          headers: cleanHeaders,
+          waitForCookie: "cf_clearance",
+          force: true,
+        });
+
+        // Forward cookies directly into headers (same pattern as zcloud)
+        if (wafResult.userAgent) headers["User-Agent"] = wafResult.userAgent;
+        headers["Cookie"] =
+          (headers["Cookie"] ? headers["Cookie"] + "; " : "") +
+          wafResult.cookies;
+
+        // Retry once with the WebView cookies
+        return await axios({
+          url: targetUrl,
+          method: options.method || "GET",
+          data: options.data,
+          headers,
+          signal: options.signal,
+        });
+      }
+
+      // --- Handle 429 rate limiting ---
+      if (status === 429 && attempt < MAX_429_RETRIES) {
         const retryAfter = error.response?.headers?.["retry-after"];
         const waitMs = retryAfter
           ? parseInt(retryAfter, 10) * 1000
           : BACKOFF_MS[attempt] || 15000;
         console.log(
-          `AnimePahe: 429 rate limited. Waiting ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+          `AnimePahe: 429 rate limited. Waiting ${waitMs}ms (attempt ${attempt + 1}/${MAX_429_RETRIES})`,
         );
         await sleep(waitMs);
         continue;
-      }
-
-      // 403/503: Cloudflare rejected — clear cached cookies so ensureCfClearance re-solves next time
-      if (status === 403 || status === 503) {
-        console.warn(
-          `AnimePahe: Got ${status} for ${targetUrl}. Clearing cached cookies.`,
-        );
-        await kvStore?.delete("animepahe_solved_at");
-        await kvStore?.delete("animepahe_cookie");
-        await kvStore?.delete("animepahe_ua");
       }
 
       throw error;

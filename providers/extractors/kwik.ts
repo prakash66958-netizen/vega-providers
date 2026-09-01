@@ -41,12 +41,9 @@ export async function kwikExtractor(
   signal?: AbortSignal,
   referer: string = "https://animepahe.pw/",
 ): Promise<{ streamUrl: string; type: string } | null> {
-  const { axios, kvStore, commonHeaders } = providerContext;
+  const { axios, commonHeaders, openWebView } = providerContext;
 
-  // Use the device's cached User-Agent (from Cloudflare solve) — NOT a hardcoded desktop UA
-  const savedUa = await kvStore?.get<string>("animepahe_ua");
-  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
-
+  // Use commonHeaders as base — same pattern as the working zcloud extractor
   const headers: Record<string, string> = {
     ...(commonHeaders || {}),
     Referer: referer,
@@ -55,19 +52,44 @@ export async function kwikExtractor(
     "Accept-Language": "en-US,en;q=0.9",
   };
 
-  if (savedUa) {
-    headers["User-Agent"] = savedUa;
-  }
-  if (savedCookie) {
-    headers["Cookie"] = savedCookie;
-  }
-
   try {
-    // Single attempt — no WebView inside the extractor.
-    // The caller (stream.ts) already ran ensureCfClearance() for animepahe.
-    // Kwik is on a different domain, so cf_clearance won't help anyway.
-    // If kwik blocks us, we return the embed URL as fallback.
-    const res = await axios.get(kwikUrl, { headers, signal });
+    let res: any;
+    try {
+      res = await axios.get(kwikUrl, { headers, signal });
+    } catch (err: any) {
+      // If kwik is behind Cloudflare, solve it (same pattern as zcloud)
+      if (
+        (err.response?.status === 403 || err.response?.status === 503) &&
+        openWebView
+      ) {
+        console.log(`kwikExtractor: WAF detected for ${kwikUrl}, solving...`);
+
+        const kwikBase = kwikUrl.split("/").slice(0, 3).join("/");
+        const cleanHeaders = { ...headers, Referer: kwikBase };
+        delete cleanHeaders["User-Agent"];
+        delete cleanHeaders["sec-ch-ua"];
+        delete cleanHeaders["sec-ch-ua-mobile"];
+        delete cleanHeaders["sec-ch-ua-platform"];
+        delete cleanHeaders["Cookie"];
+
+        const wafResult = await openWebView(kwikBase, {
+          title: "Solve the captcha below and click done",
+          description: "Required for video playback.",
+          headers: cleanHeaders,
+          waitForCookie: "cf_clearance",
+          force: true,
+        });
+
+        if (wafResult.userAgent) headers["User-Agent"] = wafResult.userAgent;
+        headers["Cookie"] =
+          (headers["Cookie"] ? headers["Cookie"] + "; " : "") +
+          wafResult.cookies;
+
+        res = await axios.get(kwikUrl, { headers, signal });
+      } else {
+        throw err;
+      }
+    }
 
     const html: string = typeof res?.data === "string" ? res.data : "";
 
@@ -94,10 +116,7 @@ export async function kwikExtractor(
       searchContext.match(/['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/i);
 
     if (m3u8Match?.[1]) {
-      return {
-        streamUrl: m3u8Match[1],
-        type: "m3u8",
-      };
+      return { streamUrl: m3u8Match[1], type: "m3u8" };
     }
 
     // 2. Look for direct .mp4 source URL
@@ -109,10 +128,7 @@ export async function kwikExtractor(
       searchContext.match(/['"](https?:\/\/[^'"]+\.mp4[^'"]*)['"]/i);
 
     if (mp4Match?.[1]) {
-      return {
-        streamUrl: mp4Match[1],
-        type: "mp4",
-      };
+      return { streamUrl: mp4Match[1], type: "mp4" };
     }
 
     // 3. Look for POST form download token in unpacked script
@@ -158,16 +174,9 @@ export async function kwikExtractor(
     }
 
     // 4. Fallback: return kwikUrl as embed
-    return {
-      streamUrl: kwikUrl,
-      type: "embed",
-    };
+    return { streamUrl: kwikUrl, type: "embed" };
   } catch (error) {
     console.error("kwikExtractor error for", kwikUrl, error);
-    // Graceful fallback — don't crash the whole stream
-    return {
-      streamUrl: kwikUrl,
-      type: "embed",
-    };
+    return { streamUrl: kwikUrl, type: "embed" };
   }
 }
