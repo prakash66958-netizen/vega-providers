@@ -1,6 +1,7 @@
 import { ProviderContext, Stream } from "../types";
 import { kwikExtractor } from "../extractors/kwik";
 import { getBaseUrl, requestAnimePahe } from "./client";
+import { throwProviderError } from "../providerErrors";
 
 export const getStream = async function ({
   link,
@@ -18,6 +19,24 @@ export const getStream = async function ({
   const baseUrl = await getBaseUrl(providerContext);
 
   try {
+    // If the link is already a direct kwik or video link
+    if (link.includes("kwik.") || link.includes("/e/") || link.includes("/f/")) {
+      const extracted = await kwikExtractor(link, axios, signal, baseUrl);
+      return [
+        {
+          server: "Kwik Stream",
+          link: extracted?.streamUrl || link,
+          type: extracted?.type || "m3u8",
+          quality: "720",
+          headers: {
+            Referer: link,
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+          },
+        },
+      ];
+    }
+
     const playUrl = link.startsWith("http")
       ? link
       : `${baseUrl}${link.startsWith("/") ? "" : "/"}${link}`;
@@ -26,7 +45,7 @@ export const getStream = async function ({
       isHtml: true,
       signal,
     });
-    const html = response.data;
+    const html: string = typeof response.data === "string" ? response.data : "";
     const $ = cheerio.load(html);
 
     // Read user configuration from settings
@@ -45,44 +64,66 @@ export const getStream = async function ({
 
     const candidates: ServerCandidate[] = [];
 
-    // Find all resolution/download buttons on the play page
-    $("button[data-src], #resolutionMenu button, #dropDownload a, div#pickDownload a").each(
-      (_, el) => {
-        const kwikUrl = $(el).attr("data-src") || $(el).attr("href") || "";
-        if (!kwikUrl || (!kwikUrl.includes("kwik") && !kwikUrl.includes("/e/"))) {
-          return;
-        }
+    // Helper to add unique candidate
+    const addCandidate = (
+      kwikUrl: string,
+      resVal: string = "720",
+      audioVal: string = "sub",
+      fansubVal: string = "",
+      customLabel?: string,
+    ) => {
+      if (!kwikUrl || candidates.some((c) => c.kwikUrl === kwikUrl)) return;
 
-        // Avoid duplicate candidates
-        if (candidates.some((c) => c.kwikUrl === kwikUrl)) {
-          return;
-        }
+      const audioLabel = audioVal.toLowerCase().includes("dub") ? "Dub" : "Sub";
+      const fansubPart = fansubVal ? ` - ${fansubVal}` : "";
+      const label =
+        customLabel || `Kwik ${resVal}p (${audioLabel}${fansubPart})`;
 
-        const audioCode = $(el).attr("data-audio") || "";
-        const audioLabel =
-          audioCode === "eng" || audioCode.toLowerCase().includes("dub")
-            ? "Dub"
-            : "Sub";
+      candidates.push({
+        label,
+        kwikUrl,
+        resolution: resVal,
+        audio: audioLabel.toLowerCase(),
+        fansub: fansubVal,
+      });
+    };
 
-        const resolution = $(el).attr("data-resolution") || "720";
-        const fansub = $(el).attr("data-fansub") || "";
-        const textLabel = $(el).text().trim();
+    // 1. Find all resolution and download buttons
+    $(
+      "button[data-src], #resolutionMenu button, #dropDownload a, div#pickDownload a, a[data-src], a[href*='kwik']",
+    ).each((_, el) => {
+      const kwikUrl = $(el).attr("data-src") || $(el).attr("href") || "";
+      if (!kwikUrl || (!kwikUrl.includes("kwik") && !kwikUrl.includes("/e/") && !kwikUrl.includes("/f/"))) {
+        return;
+      }
 
-        const fansubPart = fansub ? ` - ${fansub}` : "";
-        const label =
-          textLabel || `Kwik ${resolution}p (${audioLabel}${fansubPart})`;
+      const audioCode = $(el).attr("data-audio") || "";
+      const resolution = $(el).attr("data-resolution") || "720";
+      const fansub = $(el).attr("data-fansub") || "";
+      const textLabel = $(el).text().trim();
 
-        candidates.push({
-          label,
-          kwikUrl,
-          resolution,
-          audio: audioLabel.toLowerCase(),
-          fansub,
-        });
-      },
-    );
+      addCandidate(kwikUrl, resolution, audioCode, fansub, textLabel);
+    });
 
-    const streams: Stream[] = [];
+    // 2. Check for iframes
+    $("iframe[src]").each((_, el) => {
+      const src = $(el).attr("src") || "";
+      if (src.includes("kwik") || src.includes("/e/")) {
+        addCandidate(src, "720", "sub", "", "Kwik Player (Default)");
+      }
+    });
+
+    // 3. Regex fallback across full HTML for any kwik embed / download URLs
+    const kwikRegex = /https?:\/\/[a-zA-Z0-9.-]*kwik\.[a-z]+\/[ef]\/[a-zA-Z0-9]+/gi;
+    let match: RegExpExecArray | null;
+    while ((match = kwikRegex.exec(html)) !== null) {
+      addCandidate(match[0], "720", "sub", "", "Kwik Stream");
+    }
+
+    if (candidates.length === 0) {
+      console.warn("AnimePahe: No server candidates found on play page:", playUrl);
+      return [];
+    }
 
     // Resolve candidates concurrently
     const extractionPromises = candidates.map(async (candidate) => {
@@ -94,51 +135,65 @@ export const getStream = async function ({
           playUrl,
         );
 
-        if (extracted?.streamUrl) {
-          const qualityVal = (
-            candidate.resolution === "1080"
-              ? "1080"
-              : candidate.resolution === "720"
-                ? "720"
-                : candidate.resolution === "360"
-                  ? "360"
-                  : candidate.resolution === "480"
-                    ? "480"
-                    : "720"
-          ) as "360" | "480" | "720" | "1080" | "2160";
+        const finalUrl = extracted?.streamUrl || candidate.kwikUrl;
+        const qualityVal = (
+          candidate.resolution === "1080"
+            ? "1080"
+            : candidate.resolution === "720"
+              ? "720"
+              : candidate.resolution === "360"
+                ? "360"
+                : candidate.resolution === "480"
+                  ? "480"
+                  : "720"
+        ) as "360" | "480" | "720" | "1080" | "2160";
 
-          return {
-            server: candidate.label,
-            link: extracted.streamUrl,
-            type: extracted.type || "m3u8",
-            quality: qualityVal,
-            headers: {
-              Referer: candidate.kwikUrl,
-              "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            },
-            _audio: candidate.audio,
-            _res: candidate.resolution,
-          };
-        }
+        return {
+          server: candidate.label,
+          link: finalUrl,
+          type: extracted?.type || "m3u8",
+          quality: qualityVal,
+          headers: {
+            Referer: candidate.kwikUrl,
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+          },
+          _audio: candidate.audio,
+          _res: candidate.resolution,
+        };
       } catch (err) {
-        console.error("AnimePahe failed resolving candidate:", candidate.label, err);
+        console.error(
+          "AnimePahe failed resolving candidate:",
+          candidate.label,
+          err,
+        );
+        // Even if extraction fails, return candidate with kwikUrl as stream link
+        return {
+          server: candidate.label,
+          link: candidate.kwikUrl,
+          type: "m3u8",
+          quality: "720" as const,
+          headers: {
+            Referer: playUrl,
+          },
+          _audio: candidate.audio,
+          _res: candidate.resolution,
+        };
       }
-      return null;
     });
 
     const results = await Promise.all(extractionPromises);
+    const streams: Stream[] = [];
 
     for (const res of results) {
-      if (res) {
+      if (res && res.link) {
         const { _audio, _res, ...streamItem } = res;
         streams.push(streamItem);
       }
     }
 
-    // Sort streams based on user preference and download mode
+    // Sort streams based on preferences
     streams.sort((a, b) => {
-      // 1. If preferredAudio matches
       if (preferredAudio === "sub") {
         if (a.server.includes("Sub") && !b.server.includes("Sub")) return -1;
         if (!a.server.includes("Sub") && b.server.includes("Sub")) return 1;
@@ -147,7 +202,6 @@ export const getStream = async function ({
         if (!a.server.includes("Dub") && b.server.includes("Dub")) return 1;
       }
 
-      // 2. Resolution matching
       if (preferredQuality !== "auto") {
         if (a.quality === preferredQuality && b.quality !== preferredQuality)
           return -1;
@@ -155,7 +209,6 @@ export const getStream = async function ({
           return 1;
       }
 
-      // 3. If download mode, prefer 1080p -> 720p -> 480p -> 360p
       const qA = parseInt(a.quality || "0", 10);
       const qB = parseInt(b.quality || "0", 10);
       return qB - qA;
@@ -163,7 +216,6 @@ export const getStream = async function ({
 
     return streams;
   } catch (error) {
-    console.error("AnimePahe getStream error:", error);
-    return [];
+    throwProviderError("AnimePahe", "getStream", error);
   }
 };
