@@ -15,13 +15,22 @@ export const getStream = async function ({
   providerContext: ProviderContext;
   isDownload?: boolean;
 }): Promise<Stream[]> {
-  const { cheerio, axios, kvStore } = providerContext;
+  const { cheerio, kvStore } = providerContext;
   const baseUrl = await getBaseUrl(providerContext);
 
   try {
     // If the link is already a direct kwik or video link
-    if (link.includes("kwik.") || link.includes("/e/") || link.includes("/f/")) {
-      const extracted = await kwikExtractor(link, axios, signal, baseUrl);
+    if (
+      link.includes("kwik.") ||
+      link.includes("/e/") ||
+      link.includes("/f/")
+    ) {
+      const extracted = await kwikExtractor(
+        link,
+        providerContext,
+        signal,
+        baseUrl,
+      );
       return [
         {
           server: "Kwik Stream",
@@ -93,7 +102,12 @@ export const getStream = async function ({
       "button[data-src], #resolutionMenu button, #dropDownload a, div#pickDownload a, a[data-src], a[href*='kwik']",
     ).each((_, el) => {
       const kwikUrl = $(el).attr("data-src") || $(el).attr("href") || "";
-      if (!kwikUrl || (!kwikUrl.includes("kwik") && !kwikUrl.includes("/e/") && !kwikUrl.includes("/f/"))) {
+      if (
+        !kwikUrl ||
+        (!kwikUrl.includes("kwik") &&
+          !kwikUrl.includes("/e/") &&
+          !kwikUrl.includes("/f/"))
+      ) {
         return;
       }
 
@@ -114,14 +128,18 @@ export const getStream = async function ({
     });
 
     // 3. Regex fallback across full HTML for any kwik embed / download URLs
-    const kwikRegex = /https?:\/\/[a-zA-Z0-9.-]*kwik\.[a-z]+\/[ef]\/[a-zA-Z0-9]+/gi;
+    const kwikRegex =
+      /https?:\/\/[a-zA-Z0-9.-]*kwik\.[a-z]+\/[ef]\/[a-zA-Z0-9]+/gi;
     let match: RegExpExecArray | null;
     while ((match = kwikRegex.exec(html)) !== null) {
       addCandidate(match[0], "720", "sub", "", "Kwik Stream");
     }
 
     if (candidates.length === 0) {
-      console.warn("AnimePahe: No server candidates found on play page:", playUrl);
+      console.warn(
+        "AnimePahe: No server candidates found on play page:",
+        playUrl,
+      );
       return [];
     }
 
@@ -130,7 +148,7 @@ export const getStream = async function ({
       try {
         const extracted = await kwikExtractor(
           candidate.kwikUrl,
-          axios,
+          providerContext,
           signal,
           playUrl,
         );
@@ -167,11 +185,10 @@ export const getStream = async function ({
           candidate.label,
           err,
         );
-        // Even if extraction fails, return candidate with kwikUrl as stream link
         return {
           server: candidate.label,
           link: candidate.kwikUrl,
-          type: "m3u8",
+          type: "embed" as const,
           quality: "720" as const,
           headers: {
             Referer: playUrl,
