@@ -63,7 +63,6 @@ export async function kwikExtractor(
       const res = await axios.get(kwikUrl, { headers, signal });
       html = typeof res?.data === "string" ? res.data : "";
     } catch (err: any) {
-      // If kwik is behind Cloudflare challenge, solve via WebView and read rendered HTML
       if (
         (err.response?.status === 403 || err.response?.status === 503) &&
         openWebView
@@ -106,7 +105,7 @@ export async function kwikExtractor(
 
     const searchContext = html + "\n" + unpacked;
 
-    // 1. Look for direct .m3u8 source URL
+    // 1. Look for direct .m3u8 source URL (specific patterns)
     const m3u8Match =
       searchContext.match(
         /const\s+source\s*=\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/i,
@@ -120,7 +119,7 @@ export async function kwikExtractor(
       return { streamUrl: m3u8Match[1], type: "m3u8" };
     }
 
-    // 2. Look for direct .mp4 source URL
+    // 2. Look for direct .mp4 source URL (specific patterns)
     const mp4Match =
       searchContext.match(
         /src\s*:\s*['"](https?:\/\/[^'"]+\.mp4[^'"]*)['"]/i,
@@ -174,7 +173,17 @@ export async function kwikExtractor(
       }
     }
 
-    // 4. Fallback: return kwikUrl as embed
+    // 4. Broad regex fallback for any .m3u8 or .mp4 URL in searchContext
+    const broadM3u8 = searchContext.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/i);
+    if (broadM3u8) {
+      return { streamUrl: broadM3u8[0], type: "m3u8" };
+    }
+    const broadMp4 = searchContext.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/i);
+    if (broadMp4) {
+      return { streamUrl: broadMp4[0], type: "mp4" };
+    }
+
+    // 5. Fallback: return kwikUrl as embed
     return { streamUrl: kwikUrl, type: "embed" };
   } catch (error) {
     console.error("kwikExtractor error for", kwikUrl, error);

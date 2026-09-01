@@ -23,6 +23,7 @@ export const getStream = async function ({
   const baseUrl = await getBaseUrl(providerContext);
 
   try {
+    const savedUa = await kvStore?.get<string>("animepahe_ua");
 
     // If the link is already a direct kwik or video link
     if (
@@ -44,6 +45,9 @@ export const getStream = async function ({
           quality: "720",
           headers: {
             Referer: link,
+            "User-Agent":
+              savedUa ||
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
           },
         },
       ];
@@ -146,16 +150,14 @@ export const getStream = async function ({
       return [];
     }
 
-    // *** CRITICAL FIX: Resolve candidates SEQUENTIALLY with delay ***
-    // Firing all kwik extractions in parallel caused mass 429/403 errors.
+    // Resolve candidates sequentially with delays
     const streams: Stream[] = [];
 
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i];
 
-      // 1-second delay between each kwik extraction (skip first)
       if (i > 0) {
-        await sleep(1000);
+        await sleep(800);
       }
 
       try {
@@ -167,6 +169,14 @@ export const getStream = async function ({
         );
 
         const finalUrl = extracted?.streamUrl || candidate.kwikUrl;
+        const streamType =
+          extracted?.type ||
+          (finalUrl.includes(".m3u8")
+            ? "m3u8"
+            : finalUrl.includes(".mp4")
+              ? "mp4"
+              : "embed");
+
         const qualityVal = (
           candidate.resolution === "1080"
             ? "1080"
@@ -182,10 +192,13 @@ export const getStream = async function ({
         streams.push({
           server: candidate.label,
           link: finalUrl,
-          type: extracted?.type || "m3u8",
+          type: streamType,
           quality: qualityVal,
           headers: {
             Referer: candidate.kwikUrl,
+            "User-Agent":
+              savedUa ||
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
           },
         });
       } catch (err) {
@@ -194,7 +207,6 @@ export const getStream = async function ({
           candidate.label,
           err,
         );
-        // Still add as embed fallback
         streams.push({
           server: candidate.label,
           link: candidate.kwikUrl,
@@ -202,12 +214,15 @@ export const getStream = async function ({
           quality: "720",
           headers: {
             Referer: playUrl,
+            "User-Agent":
+              savedUa ||
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
           },
         });
       }
     }
 
-    // Sort streams based on preferences
+    // Sort streams based on user preferences
     streams.sort((a, b) => {
       if (preferredAudio === "sub") {
         if (a.server.includes("Sub") && !b.server.includes("Sub")) return -1;

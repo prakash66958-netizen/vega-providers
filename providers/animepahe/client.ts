@@ -58,7 +58,7 @@ function extractDataFromWaf(rawData: string): any {
     }
   }
 
-  // 4. Return raw HTML string
+  // 4. Return raw string
   return rawData;
 }
 
@@ -66,10 +66,9 @@ function extractDataFromWaf(rawData: string): any {
  * Robust request handler:
  * 1. Checks kvStore for saved Cloudflare cookies & User-Agent.
  * 2. Attempts HTTP request with Axios.
- * 3. On 403 Cloudflare WAF: Opens the EXACT targetUrl in the device WebView.
- *    The WebView executes JS and renders the page/JSON.
- *    Directly captures `wafResult.data`, saves cookies to kvStore, and returns the data.
- *    This avoids secondary Axios TLS fingerprint rejection loops.
+ * 3. On 403 Cloudflare WAF: Opens the targetUrl in the device WebView.
+ *    Captures cookies & User-Agent, saves to kvStore.
+ *    Returns parsed JSON if already present in WebView, or performs verified Axios request.
  * 4. On 429: Retries with exponential backoff.
  */
 export async function requestAnimePahe(
@@ -165,24 +164,45 @@ export async function requestAnimePahe(
           headers["User-Agent"] = newUa;
         }
 
-        // If the WebView captured the page content directly, parse and return it!
+        // Check if the WebView returned valid JSON or final non-challenge HTML
         if (wafResult.data && wafResult.data.trim()) {
-          const parsedData = extractDataFromWaf(wafResult.data);
-          return {
-            data: parsedData,
-            status: 200,
-            headers: {},
-          };
+          const parsed = extractDataFromWaf(wafResult.data);
+          const isJsonObject = parsed && typeof parsed === "object";
+          const isCfHtml =
+            typeof parsed === "string" &&
+            (parsed.includes("Just a moment") ||
+              parsed.includes("cf-challenge") ||
+              parsed.includes("turnstile"));
+
+          if (isJsonObject || (options.isHtml && !isCfHtml)) {
+            return {
+              data: parsed,
+              status: 200,
+              headers: {},
+            };
+          }
         }
 
-        // Fallback: Retry with fresh cookies and user agent
-        return await axios({
-          url: targetUrl,
-          method: options.method || "GET",
-          data: options.data,
-          headers,
-          signal: options.signal,
-        });
+        // Retry request with fresh cookies and User-Agent
+        try {
+          return await axios({
+            url: targetUrl,
+            method: options.method || "GET",
+            data: options.data,
+            headers,
+            signal: options.signal,
+          });
+        } catch (retryErr) {
+          // If secondary call fails, return whatever data we extracted from the WebView
+          if (wafResult.data) {
+            return {
+              data: extractDataFromWaf(wafResult.data),
+              status: 200,
+              headers: {},
+            };
+          }
+          throw retryErr;
+        }
       }
 
       // --- Rate Limiting (429) ---

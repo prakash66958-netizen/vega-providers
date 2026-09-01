@@ -2,11 +2,24 @@ import { EpisodeLink, ProviderContext } from "../types";
 import { requestAnimePahe } from "./client";
 import { throwProviderError } from "../providerErrors";
 
-/**
- * Sleep helper
- */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseJsonSafe(data: any): any {
+  if (!data) return null;
+  if (typeof data === "object") return data;
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 export const getEpisodes = async function ({
@@ -35,8 +48,7 @@ export const getEpisodes = async function ({
     // Fetch Page 1 of episodes
     const page1Url = `/api?m=release&id=${session}&sort=episode_asc&page=1`;
     const res1 = await requestAnimePahe(page1Url, providerContext);
-    const data1 =
-      typeof res1.data === "string" ? JSON.parse(res1.data) : res1.data;
+    const data1 = parseJsonSafe(res1?.data);
 
     if (!data1 || !Array.isArray(data1.data)) {
       return [];
@@ -49,8 +61,8 @@ export const getEpisodes = async function ({
     // to avoid 429 rate limiting from AnimePahe's API
     if (lastPage > 1) {
       for (let p = 2; p <= Math.min(lastPage, 50); p++) {
-        // 1500ms delay between each page to stay well under rate limits
-        await sleep(1500);
+        // 1200ms delay between each page to stay well under rate limits
+        await sleep(1200);
 
         try {
           const pageRes = await requestAnimePahe(
@@ -59,10 +71,7 @@ export const getEpisodes = async function ({
           );
 
           if (pageRes?.data) {
-            const pageData =
-              typeof pageRes.data === "string"
-                ? JSON.parse(pageRes.data)
-                : pageRes.data;
+            const pageData = parseJsonSafe(pageRes.data);
             if (pageData?.data && Array.isArray(pageData.data)) {
               allReleases.push(...pageData.data);
             }
@@ -72,7 +81,6 @@ export const getEpisodes = async function ({
             `AnimePahe: Failed fetching episodes page ${p}:`,
             e.message,
           );
-          // If we get rate-limited even after retry, stop fetching more pages
           if (e.response?.status === 429) {
             console.warn(
               "AnimePahe: Stopping episode pagination due to rate limit.",
