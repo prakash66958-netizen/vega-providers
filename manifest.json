@@ -1,10 +1,10 @@
 [
   {
-    "display_name": "Aniwave",
-    "value": "aniwave",
-    "icon": "https://aniwaves.ru/assets/images/aniwave.png",
+    "display_name": "AniNeko (AniDao)",
+    "value": "anidao",
+    "icon": "https://anidao.to/favicon.ico",
     "version": "1.0.0",
     "type": "anime",
-    "description": "Watch Anime Online in HD with sub & dub options, full episode lists, and Vidplay/MyCloud/BYFMS servers."
+    "description": "Watch Subbed & Dubbed Japanese Anime in 1080p/720p HD with fast unblocked edge streaming, full episode catalogs, and subtitles."
   }
 ]
