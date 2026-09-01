@@ -1,5 +1,5 @@
 import { Post, ProviderContext } from "../types";
-import { requestAnimePahe } from "./client";
+import { requestAnimePahe, ensureCfClearance } from "./client";
 import { throwProviderError } from "../providerErrors";
 
 export const getPosts = async function ({
@@ -15,6 +15,7 @@ export const getPosts = async function ({
   providerContext: ProviderContext;
 }): Promise<Post[]> {
   try {
+    await ensureCfClearance(providerContext);
     const pageNum = page || 1;
     let endpoint = `/api?m=airing&page=${pageNum}`;
 
@@ -82,6 +83,7 @@ export const getSearchPosts = async function ({
   providerContext: ProviderContext;
 }): Promise<Post[]> {
   try {
+    await ensureCfClearance(providerContext);
     if (!searchQuery || !searchQuery.trim()) {
       return [];
     }

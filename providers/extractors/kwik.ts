@@ -41,50 +41,33 @@ export async function kwikExtractor(
   signal?: AbortSignal,
   referer: string = "https://animepahe.pw/",
 ): Promise<{ streamUrl: string; type: string } | null> {
-  const { axios, openWebView } = providerContext;
+  const { axios, kvStore, commonHeaders } = providerContext;
+
+  // Use the device's cached User-Agent (from Cloudflare solve) — NOT a hardcoded desktop UA
+  const savedUa = await kvStore?.get<string>("animepahe_ua");
+  const savedCookie = await kvStore?.get<string>("animepahe_cookie");
 
   const headers: Record<string, string> = {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    ...(commonHeaders || {}),
     Referer: referer,
     Accept:
       "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
   };
 
+  if (savedUa) {
+    headers["User-Agent"] = savedUa;
+  }
+  if (savedCookie) {
+    headers["Cookie"] = savedCookie;
+  }
+
   try {
-    let res: any;
-    try {
-      res = await axios.get(kwikUrl, { headers, signal });
-    } catch (err: any) {
-      if (
-        (err.response?.status === 403 || err.response?.status === 503) &&
-        openWebView
-      ) {
-        console.log(`kwikExtractor: Solving challenge for ${kwikUrl}...`);
-        const wafResult = await openWebView(kwikUrl, {
-          title: "Solve the captcha below and click done",
-          description: "Required for video playback.",
-          headers: { Referer: referer },
-          force: true,
-          waitForCookie: "cf_clearance",
-        });
-
-        const newCookie = wafResult.cookies || (wafResult as any).cookie || "";
-        const newUa = wafResult.userAgent || headers["User-Agent"];
-
-        res = await axios.get(kwikUrl, {
-          headers: {
-            ...headers,
-            Cookie: newCookie,
-            "User-Agent": newUa,
-          },
-          signal,
-        });
-      } else {
-        throw err;
-      }
-    }
+    // Single attempt — no WebView inside the extractor.
+    // The caller (stream.ts) already ran ensureCfClearance() for animepahe.
+    // Kwik is on a different domain, so cf_clearance won't help anyway.
+    // If kwik blocks us, we return the embed URL as fallback.
+    const res = await axios.get(kwikUrl, { headers, signal });
 
     const html: string = typeof res?.data === "string" ? res.data : "";
 
@@ -145,38 +128,43 @@ export async function kwikExtractor(
       const formUrl = formMatch[1];
       const token = formMatch[2];
 
-      const postRes = await axios.post(
-        formUrl,
-        new URLSearchParams({ _token: token }).toString(),
-        {
-          headers: {
-            ...headers,
-            "Content-Type": "application/x-www-form-urlencoded",
-            Referer: kwikUrl,
+      try {
+        const postRes = await axios.post(
+          formUrl,
+          new URLSearchParams({ _token: token }).toString(),
+          {
+            headers: {
+              ...headers,
+              "Content-Type": "application/x-www-form-urlencoded",
+              Referer: kwikUrl,
+            },
+            maxRedirects: 0,
+            validateStatus: (status: number) => status >= 200 && status < 400,
+            signal,
           },
-          maxRedirects: 0,
-          validateStatus: (status: number) => status >= 200 && status < 400,
-          signal,
-        },
-      );
+        );
 
-      const downloadLocation =
-        postRes.headers["location"] || postRes.headers["Location"];
-      if (downloadLocation) {
-        return {
-          streamUrl: downloadLocation,
-          type: downloadLocation.includes(".m3u8") ? "m3u8" : "mp4",
-        };
+        const downloadLocation =
+          postRes.headers["location"] || postRes.headers["Location"];
+        if (downloadLocation) {
+          return {
+            streamUrl: downloadLocation,
+            type: downloadLocation.includes(".m3u8") ? "m3u8" : "mp4",
+          };
+        }
+      } catch (postErr) {
+        console.warn("kwikExtractor: POST form failed:", postErr);
       }
     }
 
-    // 4. Fallback: If no direct stream was unpacked, return kwikUrl as embed
+    // 4. Fallback: return kwikUrl as embed
     return {
       streamUrl: kwikUrl,
       type: "embed",
     };
   } catch (error) {
     console.error("kwikExtractor error for", kwikUrl, error);
+    // Graceful fallback — don't crash the whole stream
     return {
       streamUrl: kwikUrl,
       type: "embed",

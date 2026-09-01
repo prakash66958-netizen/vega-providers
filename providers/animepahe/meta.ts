@@ -1,5 +1,5 @@
 import { Info, ProviderContext } from "../types";
-import { requestAnimePahe } from "./client";
+import { requestAnimePahe, ensureCfClearance } from "./client";
 import { throwProviderError } from "../providerErrors";
 
 export const getMeta = async function ({
@@ -16,6 +16,7 @@ export const getMeta = async function ({
   const animeUrl = `/anime/${session}`;
 
   try {
+    await ensureCfClearance(providerContext);
     const response = await requestAnimePahe(animeUrl, providerContext, {
       isHtml: true,
     });

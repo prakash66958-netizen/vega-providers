@@ -1,7 +1,11 @@
 import { ProviderContext, Stream } from "../types";
 import { kwikExtractor } from "../extractors/kwik";
-import { getBaseUrl, requestAnimePahe } from "./client";
+import { getBaseUrl, requestAnimePahe, ensureCfClearance } from "./client";
 import { throwProviderError } from "../providerErrors";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export const getStream = async function ({
   link,
@@ -19,6 +23,8 @@ export const getStream = async function ({
   const baseUrl = await getBaseUrl(providerContext);
 
   try {
+    await ensureCfClearance(providerContext);
+
     // If the link is already a direct kwik or video link
     if (
       link.includes("kwik.") ||
@@ -39,8 +45,6 @@ export const getStream = async function ({
           quality: "720",
           headers: {
             Referer: link,
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
           },
         },
       ];
@@ -143,8 +147,18 @@ export const getStream = async function ({
       return [];
     }
 
-    // Resolve candidates concurrently
-    const extractionPromises = candidates.map(async (candidate) => {
+    // *** CRITICAL FIX: Resolve candidates SEQUENTIALLY with delay ***
+    // Firing all kwik extractions in parallel caused mass 429/403 errors.
+    const streams: Stream[] = [];
+
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+
+      // 1-second delay between each kwik extraction (skip first)
+      if (i > 0) {
+        await sleep(1000);
+      }
+
       try {
         const extracted = await kwikExtractor(
           candidate.kwikUrl,
@@ -166,46 +180,31 @@ export const getStream = async function ({
                   : "720"
         ) as "360" | "480" | "720" | "1080" | "2160";
 
-        return {
+        streams.push({
           server: candidate.label,
           link: finalUrl,
           type: extracted?.type || "m3u8",
           quality: qualityVal,
           headers: {
             Referer: candidate.kwikUrl,
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
           },
-          _audio: candidate.audio,
-          _res: candidate.resolution,
-        };
+        });
       } catch (err) {
         console.error(
           "AnimePahe failed resolving candidate:",
           candidate.label,
           err,
         );
-        return {
+        // Still add as embed fallback
+        streams.push({
           server: candidate.label,
           link: candidate.kwikUrl,
-          type: "embed" as const,
-          quality: "720" as const,
+          type: "embed",
+          quality: "720",
           headers: {
             Referer: playUrl,
           },
-          _audio: candidate.audio,
-          _res: candidate.resolution,
-        };
-      }
-    });
-
-    const results = await Promise.all(extractionPromises);
-    const streams: Stream[] = [];
-
-    for (const res of results) {
-      if (res && res.link) {
-        const { _audio, _res, ...streamItem } = res;
-        streams.push(streamItem);
+        });
       }
     }
 

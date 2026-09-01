@@ -1,5 +1,5 @@
 import { EpisodeLink, ProviderContext } from "../types";
-import { requestAnimePahe } from "./client";
+import { requestAnimePahe, ensureCfClearance } from "./client";
 import { throwProviderError } from "../providerErrors";
 
 /**
@@ -17,6 +17,7 @@ export const getEpisodes = async function ({
   providerContext: ProviderContext;
 }): Promise<EpisodeLink[]> {
   try {
+    await ensureCfClearance(providerContext);
     const urlObj = new URL(
       url.startsWith("http")
         ? url
@@ -49,8 +50,8 @@ export const getEpisodes = async function ({
     // to avoid 429 rate limiting from AnimePahe's API
     if (lastPage > 1) {
       for (let p = 2; p <= Math.min(lastPage, 50); p++) {
-        // 800ms delay between each page request to stay under rate limits
-        await sleep(800);
+        // 1500ms delay between each page to stay well under rate limits
+        await sleep(1500);
 
         try {
           const pageRes = await requestAnimePahe(
