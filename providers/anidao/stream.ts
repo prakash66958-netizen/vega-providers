@@ -46,10 +46,9 @@ async function parseMasterPlaylist(
     if (!body || !body.includes("#EXTM3U")) {
       return [
         {
-          server: "AniDao (Adaptive HLS)",
+          server: "AniDao Auto (Adaptive HLS)",
           link: masterUrl,
           type: "m3u8",
-          subtitles,
         },
       ];
     }
@@ -85,29 +84,38 @@ async function parseMasterPlaylist(
     const qualityRank: Record<string, number> = { "1080": 1, "720": 2, "480": 3, "360": 4 };
     childQualities.sort((a, b) => (qualityRank[a.quality] || 9) - (qualityRank[b.quality] || 9));
 
+    // Primary clean video streams (No CORS-blocking subtitles attached to default playback)
     for (const cq of childQualities) {
       streams.push({
-        server: `AniDao ${cq.quality}p (Direct)`,
+        server: `AniDao ${cq.quality}p`,
         link: cq.link,
         type: "m3u8",
         quality: cq.quality,
-        subtitles,
       });
     }
 
-    // Add Master Auto Stream
+    // Auto Adaptive master stream
     streams.push({
       server: "AniDao Auto (Adaptive HLS)",
       link: masterUrl,
       type: "m3u8",
-      subtitles,
     });
+
+    // Subtitle stream (optional secondary choice)
+    if (subtitles && subtitles.length > 0) {
+      streams.push({
+        server: "AniDao (with Subtitles)",
+        link: masterUrl,
+        type: "m3u8",
+        quality: "1080",
+        subtitles,
+      });
+    }
   } catch {
     streams.push({
       server: "AniDao (Adaptive HLS)",
       link: masterUrl,
       type: "m3u8",
-      subtitles,
     });
   }
 
