@@ -1,4 +1,4 @@
-import { ProviderContext, Stream, TextTracks } from "../types";
+import { ProviderContext, Stream } from "../types";
 import { getBaseUrl, getAniDaoHeaders } from "./client";
 import { throwProviderError } from "../providerErrors";
 
@@ -28,12 +28,21 @@ function safeUnpack(code: string): string {
   }
 }
 
-async function parseMasterPlaylist(
+async function buildStreamsFromMaster(
   masterUrl: string,
   axios: any,
-  subtitles?: TextTracks,
 ): Promise<Stream[]> {
   const streams: Stream[] = [];
+
+  // 1. Primary Master Playlist (Auto / Adaptive HLS for ExoPlayer & AVPlayer)
+  streams.push({
+    server: "AniDao (Auto / 1080p)",
+    link: masterUrl,
+    type: "m3u8",
+    quality: "1080",
+  });
+
+  // 2. Parse child playlists
   try {
     const res = await axios.get(masterUrl, {
       headers: {
@@ -43,81 +52,48 @@ async function parseMasterPlaylist(
     });
 
     const body = typeof res.data === "string" ? res.data : "";
-    if (!body || !body.includes("#EXTM3U")) {
-      return [
-        {
-          server: "AniDao Auto (Adaptive HLS)",
-          link: masterUrl,
-          type: "m3u8",
-        },
-      ];
-    }
+    if (body.includes("#EXTM3U")) {
+      const lines = body.split("\n");
+      const childQualities: { quality: "1080" | "720" | "480" | "360"; link: string }[] = [];
 
-    const lines = body.split("\n");
-    const childQualities: { quality: "1080" | "720" | "480" | "360"; link: string }[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith("#EXT-X-STREAM-INF:")) {
+          const nextLine = lines[i + 1] ? lines[i + 1].trim() : "";
+          if (nextLine && !nextLine.startsWith("#")) {
+            const fullUrl = new URL(nextLine, masterUrl).href;
+            let q: "1080" | "720" | "480" | "360" = "1080";
+            if (line.includes("1920x1080") || line.includes('1080p"') || line.includes("1080")) {
+              q = "1080";
+            } else if (line.includes("1280x720") || line.includes('720p"') || line.includes("720")) {
+              q = "720";
+            } else if (line.includes("854x480") || line.includes("852x480") || line.includes('480p"') || line.includes("480")) {
+              q = "480";
+            } else if (line.includes("640x360") || line.includes('360p"') || line.includes("360")) {
+              q = "360";
+            }
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith("#EXT-X-STREAM-INF:")) {
-        const nextLine = lines[i + 1] ? lines[i + 1].trim() : "";
-        if (nextLine && !nextLine.startsWith("#")) {
-          const fullUrl = new URL(nextLine, masterUrl).href;
-          let q: "1080" | "720" | "480" | "360" = "1080";
-          if (line.includes("1920x1080") || line.includes('1080p"') || line.includes("1080")) {
-            q = "1080";
-          } else if (line.includes("1280x720") || line.includes('720p"') || line.includes("720")) {
-            q = "720";
-          } else if (line.includes("854x480") || line.includes("852x480") || line.includes('480p"') || line.includes("480")) {
-            q = "480";
-          } else if (line.includes("640x360") || line.includes('360p"') || line.includes("360")) {
-            q = "360";
-          }
-
-          if (!childQualities.some((c) => c.link === fullUrl)) {
-            childQualities.push({ quality: q, link: fullUrl });
+            if (!childQualities.some((c) => c.link === fullUrl)) {
+              childQualities.push({ quality: q, link: fullUrl });
+            }
           }
         }
       }
+
+      // Sort descending (1080p, 720p, 480p, 360p)
+      const rank: Record<string, number> = { "1080": 1, "720": 2, "480": 3, "360": 4 };
+      childQualities.sort((a, b) => (rank[a.quality] || 9) - (rank[b.quality] || 9));
+
+      for (const cq of childQualities) {
+        streams.push({
+          server: `AniDao ${cq.quality}p`,
+          link: cq.link,
+          type: "m3u8",
+          quality: cq.quality,
+        });
+      }
     }
-
-    // Sort 1080p first, then 720p, 480p, 360p
-    const qualityRank: Record<string, number> = { "1080": 1, "720": 2, "480": 3, "360": 4 };
-    childQualities.sort((a, b) => (qualityRank[a.quality] || 9) - (qualityRank[b.quality] || 9));
-
-    // Primary clean video streams (No CORS-blocking subtitles attached to default playback)
-    for (const cq of childQualities) {
-      streams.push({
-        server: `AniDao ${cq.quality}p`,
-        link: cq.link,
-        type: "m3u8",
-        quality: cq.quality,
-      });
-    }
-
-    // Auto Adaptive master stream
-    streams.push({
-      server: "AniDao Auto (Adaptive HLS)",
-      link: masterUrl,
-      type: "m3u8",
-    });
-
-    // Subtitle stream (optional secondary choice)
-    if (subtitles && subtitles.length > 0) {
-      streams.push({
-        server: "AniDao (with Subtitles)",
-        link: masterUrl,
-        type: "m3u8",
-        quality: "1080",
-        subtitles,
-      });
-    }
-  } catch {
-    streams.push({
-      server: "AniDao (Adaptive HLS)",
-      link: masterUrl,
-      type: "m3u8",
-    });
-  }
+  } catch {}
 
   return streams;
 }
@@ -173,21 +149,6 @@ export const getStream = async function ({
 
     for (const iframeUrl of iframes) {
       try {
-        let subtitles: TextTracks = [];
-        try {
-          const urlObj = new URL(iframeUrl);
-          const subUrl = urlObj.searchParams.get("sub") || urlObj.searchParams.get("caption_1") || "";
-          const subLang = urlObj.searchParams.get("sub_1") || "English";
-          if (subUrl) {
-            subtitles.push({
-              title: subLang,
-              language: "en",
-              type: "text/vtt",
-              uri: subUrl,
-            });
-          }
-        } catch {}
-
         const embedRes = await axios.get(iframeUrl, {
           headers: {
             "User-Agent":
@@ -203,8 +164,7 @@ export const getStream = async function ({
         const srcMatch = embedHtml.match(/const\s+src\s*=\s*["']([^"']+)["']/);
         if (srcMatch && srcMatch[1]) {
           const streamUrl = srcMatch[1];
-          const subTracks = subtitles.length > 0 ? subtitles : undefined;
-          const parsed = await parseMasterPlaylist(streamUrl, axios, subTracks);
+          const parsed = await buildStreamsFromMaster(streamUrl, axios);
           for (const s of parsed) {
             if (!streams.some((existing) => existing.link === s.link)) {
               streams.push(s);
@@ -233,8 +193,7 @@ export const getStream = async function ({
                     ? chosen
                     : `${new URL(iframeUrl).origin}${chosen}`;
 
-                  const subTracks = subtitles.length > 0 ? subtitles : undefined;
-                  const parsed = await parseMasterPlaylist(resolvedUrl, axios, subTracks);
+                  const parsed = await buildStreamsFromMaster(resolvedUrl, axios);
                   for (const s of parsed) {
                     if (!streams.some((existing) => existing.link === s.link)) {
                       streams.push(s);
