@@ -45,6 +45,7 @@ export const getStream = async function ({
           quality: "720",
           headers: {
             Referer: link,
+            Origin: new URL(link).origin,
             "User-Agent":
               savedUa ||
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -184,6 +185,13 @@ export const getStream = async function ({
                   : "720"
         ) as "360" | "480" | "720" | "1080" | "2160";
 
+        let origin = "";
+        try {
+          origin = new URL(candidate.kwikUrl).origin;
+        } catch {
+          origin = "https://kwik.cx";
+        }
+
         streams.push({
           server: candidate.label,
           link: finalUrl,
@@ -191,6 +199,7 @@ export const getStream = async function ({
           quality: qualityVal,
           headers: {
             Referer: candidate.kwikUrl,
+            Origin: origin,
             "User-Agent":
               savedUa ||
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -212,8 +221,13 @@ export const getStream = async function ({
       }
     }
 
-    // Sort streams based on user preferences
+    // Sort streams: Playable direct streams (.m3u8 / .mp4) first, then user quality/audio preference
     streams.sort((a, b) => {
+      const aPlayable = a.type === "m3u8" || a.type === "mp4";
+      const bPlayable = b.type === "m3u8" || b.type === "mp4";
+      if (aPlayable && !bPlayable) return -1;
+      if (!aPlayable && bPlayable) return 1;
+
       if (preferredAudio === "sub") {
         if (a.server.includes("Sub") && !b.server.includes("Sub")) return -1;
         if (!a.server.includes("Sub") && b.server.includes("Sub")) return 1;
