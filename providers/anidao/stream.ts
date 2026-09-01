@@ -86,10 +86,10 @@ export const getStream = async function ({
           const subLang = urlObj.searchParams.get("sub_1") || "English";
           if (subUrl) {
             subtitles.push({
-              file: subUrl,
-              label: subLang,
-              kind: "captions",
-              default: true,
+              title: subLang,
+              language: "en",
+              type: "text/vtt",
+              uri: subUrl,
             });
           }
         } catch {}
@@ -109,47 +109,46 @@ export const getStream = async function ({
         const srcMatch = embedHtml.match(/const\s+src\s*=\s*["']([^"']+)["']/);
         if (srcMatch && srcMatch[1]) {
           const streamUrl = srcMatch[1];
-          const embedOrigin = new URL(iframeUrl).origin;
 
-          // Add Auto master playlist
-          streams.push({
-            server: "AniDao Vibe (Auto / 1080p)",
-            link: streamUrl,
-            type: "m3u8",
-            quality: "1080",
-            subtitles: subtitles.length > 0 ? subtitles : undefined,
-            headers: {
-              Referer: `${embedOrigin}/`,
-              Origin: embedOrigin,
-            },
-          });
-
-          // If standard worker structure, add direct resolution options
+          // 1080p Direct
           if (streamUrl.endsWith("master.m3u8")) {
             const baseFolder = streamUrl.replace(/master\.m3u8.*$/, "");
             streams.push({
-              server: "AniDao Vibe (1080p Direct)",
+              server: "Vibe 1080p (Fast Edge)",
               link: `${baseFolder}1080p/index.m3u8`,
               type: "m3u8",
               quality: "1080",
               subtitles: subtitles.length > 0 ? subtitles : undefined,
               headers: {
-                Referer: `${embedOrigin}/`,
-                Origin: embedOrigin,
+                "User-Agent":
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
               },
             });
             streams.push({
-              server: "AniDao Vibe (720p Direct)",
+              server: "Vibe 720p (Fast Edge)",
               link: `${baseFolder}720p/index.m3u8`,
               type: "m3u8",
               quality: "720",
               subtitles: subtitles.length > 0 ? subtitles : undefined,
               headers: {
-                Referer: `${embedOrigin}/`,
-                Origin: embedOrigin,
+                "User-Agent":
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
               },
             });
           }
+
+          // Master Auto playlist
+          streams.push({
+            server: "Vibe Auto (Adaptive HLS)",
+            link: streamUrl,
+            type: "m3u8",
+            quality: "1080",
+            subtitles: subtitles.length > 0 ? subtitles : undefined,
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+            },
+          });
         }
 
         // Strategy 2: Packer eval(function(p,a,c,k,e,d)...)
@@ -174,34 +173,21 @@ export const getStream = async function ({
                     : `${new URL(iframeUrl).origin}${chosen}`;
 
                   streams.push({
-                    server: "AniDao Otaku (HLS / 1080p)",
+                    server: "Otaku Stream (1080p)",
                     link: resolvedUrl,
                     type: "m3u8",
                     quality: "1080",
                     subtitles: subtitles.length > 0 ? subtitles : undefined,
                     headers: {
+                      "User-Agent":
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
                       Referer: `${new URL(iframeUrl).origin}/`,
-                      Origin: new URL(iframeUrl).origin,
                     },
                   });
                 }
               } catch {}
             }
           }
-        }
-
-        // Strategy 3: Direct iframe fallback player
-        if (streams.length === 0) {
-          streams.push({
-            server: "AniDao Web Embed",
-            link: iframeUrl,
-            type: "m3u8",
-            quality: "1080",
-            subtitles: subtitles.length > 0 ? subtitles : undefined,
-            headers: {
-              Referer: `${baseUrl}/`,
-            },
-          });
         }
       } catch (err) {
         console.warn("AniDao stream embed resolution failed:", iframeUrl, err);
